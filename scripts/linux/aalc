@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+aalc_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$aalc_root"
+exec nix develop --command python scripts/linux/cli.py "$@"

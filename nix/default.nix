@@ -133,6 +133,9 @@ let
       pkgs.xdotool
       pkgs.wmctrl
       pkgs.gamescope
+      pkgs.ffmpeg
+      pkgs.pipewire
+      pkgs.systemd
     ];
 
     shellHook = ''

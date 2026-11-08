@@ -42,3 +42,7 @@ AALC acts as the direct parent process of the Gamescope container:
 - AALC must implement a Steam environment resolver capable of locating Steam libraries, Proton runtime paths, and prefix directories.
 - NixOS Steam runtime compatibility (FHS environment or Steam Linux Runtime pressure-vessel) must be accounted for by the runner.
 - Prototyping must verify that direct Proton invocation under a running Steam background client successfully passes Project Moon's server ticket authentication.
+
+### Private automation profile (2026-11-08)
+
+The Linux CLI uses a private copy of Proton compatdata, sharing only the game installation. This separates registry-backed local graphics preferences from normal Steam play. The CLI defaults to D3D11 as a workaround candidate, not a demonstrated root-cause fix. Normal application startup retains configured API selection (`auto` by default). Steam options are untouched. See `docs/linux-usage.md`.

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -213,6 +213,7 @@ class ConfigModel(BaseModel):
     slr_entrypoint: str
     compat_data_path: str
     gamescope_display: str
+    graphics_api: Literal["auto", "d3d11", "d3d12"]
 
     config_version: int
     """配置文件版本号（时间戳）"""

@@ -301,12 +301,7 @@ class GamescopeLauncher(metaclass=SingletonMeta):
 
         if self._game_exe and self._game_exe.is_file():
             self._game_dir = self._game_exe.parent
-            custom_compat = os.environ.get("AALC_COMPAT_DATA_PATH") or cfg.get_value(
-                "compat_data_path", ""
-            )
-            if custom_compat and Path(custom_compat).is_dir():
-                self._compat_data = Path(custom_compat).resolve()
-            elif (
+            if (
                 self._game_dir.parent.parent / "compatdata/1973530"
             ).is_dir():
                 self._compat_data = (
@@ -323,6 +318,15 @@ class GamescopeLauncher(metaclass=SingletonMeta):
         if not self._game_exe or not self._game_exe.is_file():
             log.error("未找到 Limbus Company 游戏文件 (LimbusCompany.exe)")
             return False
+
+        custom_compat = os.environ.get("AALC_COMPAT_DATA_PATH") or cfg.get_value("compat_data_path", "")
+        if custom_compat:
+            try:
+                self._compat_data = Path(custom_compat).expanduser().resolve()
+                self._compat_data.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                log.error(f"Cannot create automation compatdata: {exc}")
+                return False
 
         # 3. 解析 Proton 兼容层与 SLR 容器
         custom_proton = os.environ.get("AALC_PROTON_PATH") or cfg.get_value(
@@ -410,6 +414,11 @@ class GamescopeLauncher(metaclass=SingletonMeta):
             str(self._game_exe),
             "-nosound",
         ])
+        graphics_api = os.environ.get("AALC_GRAPHICS_API") or cfg.get_value("graphics_api", "auto")
+        if graphics_api not in ("auto", "d3d11", "d3d12"):
+            raise ValueError(f"Unsupported graphics API: {graphics_api}")
+        if graphics_api != "auto":
+            cmd.append(f"-force-{graphics_api}")
         return cmd
 
     def build_env(self) -> dict[str, str]:

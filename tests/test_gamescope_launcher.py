@@ -140,3 +140,21 @@ def test_failed_resolution_discards_old_paths(tmp_path, monkeypatch):
         config.game_path = ""
         assert launcher.resolve_paths() is False
         assert launcher._game_exe is None
+
+
+def test_prefix_override_with_autodetected_game(tmp_path, monkeypatch):
+    launcher = GamescopeLauncher()
+    prefix = tmp_path / 'new-prefix'
+    monkeypatch.setenv('AALC_COMPAT_DATA_PATH', str(prefix))
+    assert launcher.resolve_paths()
+    assert launcher.build_env()['STEAM_COMPAT_DATA_PATH'] == str(prefix)
+    assert prefix.is_dir()
+
+
+def test_graphics_api_only_changes_automation_command(monkeypatch):
+    launcher = GamescopeLauncher()
+    assert launcher.resolve_paths()
+    monkeypatch.setenv('AALC_GRAPHICS_API', 'd3d11')
+    assert launcher.build_command()[-1] == '-force-d3d11'
+    monkeypatch.setenv('AALC_GRAPHICS_API', 'auto')
+    assert not any(arg.startswith('-force-d3d') for arg in launcher.build_command())

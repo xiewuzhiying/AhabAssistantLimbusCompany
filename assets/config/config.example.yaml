@@ -218,3 +218,4 @@ proton_path: ""
 slr_entrypoint: ""
 compat_data_path: ""
 gamescope_display: ""
+graphics_api: auto # AALC only: auto, d3d11, d3d12

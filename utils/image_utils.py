@@ -362,6 +362,9 @@ class ImageUtils:
         kp1, des1 = orb.detectAndCompute(template, None)
         kp2, des2 = orb.detectAndCompute(target, None)
 
+        if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
+            return False, 0
+
         # 使用FLANN匹配器
         FLANN_INDEX_LSH = 6
         index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
@@ -385,6 +388,8 @@ class ImageUtils:
 
             # 计算单应性矩阵
             M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            if mask is None or len(mask) == 0:
+                return False, len(good_matches)
 
             # 计算匹配置信度评分
             inlier_ratio = np.sum(mask) / len(mask)

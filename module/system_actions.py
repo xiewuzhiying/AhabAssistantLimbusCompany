@@ -28,6 +28,8 @@ _ES_DISPLAY_REQUIRED = 0x00000002
 _power_keep_awake_lock = threading.Lock()
 # SetThreadExecutionState 绑定调用线程，因此这里不能用单个全局 depth 表达状态。
 _power_keep_awake_depths: dict[int, int] = {}
+# Linux 下以 systemd-inhibit 子进程持有抑制锁
+_linux_inhibit_processes: dict[int, subprocess.Popen] = {}
 _completion_actions_suspended = threading.Event()
 
 
@@ -37,8 +39,6 @@ def suspend_completion_actions(suspended: bool) -> None:
         _completion_actions_suspended.set()
     else:
         _completion_actions_suspended.clear()
-# Linux 下以 systemd-inhibit 子进程持有抑制锁
-_linux_inhibit_process: subprocess.Popen | None = None
 
 
 def _set_thread_execution_state(state: int) -> None:
@@ -127,7 +127,6 @@ def apply_power_keep_awake(enable: bool) -> None:
       共享全局状态导致错误释放。
     - Linux: 通过 systemd-inhibit 子进程持有 sleep/idle 抑制锁，深度归零时结束子进程。
     """
-    global _linux_inhibit_process
 
     if not IS_WINDOWS and not IS_LINUX:
         return
@@ -141,7 +140,7 @@ def apply_power_keep_awake(enable: bool) -> None:
                     _set_thread_execution_state(state)
                 else:
                     if shutil.which("systemd-inhibit"):
-                        _linux_inhibit_process = subprocess.Popen(  # noqa: S603
+                        _linux_inhibit_processes[threading.get_ident()] = subprocess.Popen(  # noqa: S603
                             ["systemd-inhibit", "--what=sleep:idle", "sleep", "infinity"],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
@@ -155,8 +154,7 @@ def apply_power_keep_awake(enable: bool) -> None:
                 if IS_WINDOWS:
                     _set_thread_execution_state(_ES_CONTINUOUS)
                 else:
-                    proc = _linux_inhibit_process
-                    _linux_inhibit_process = None
+                    proc = _linux_inhibit_processes.pop(threading.get_ident(), None)
                     if proc is not None and proc.poll() is None:
                         proc.terminate()
                 log.info("已恢复系统默认息屏策略")
@@ -184,6 +182,11 @@ def _action_exit_game() -> None:
             if SimulatorControl.connection_device is not None:
                 SimulatorControl.connection_device.close_current_app()
         log.info("已执行：退出游戏（模拟器）")
+        return
+
+    if not IS_WINDOWS:
+        game_process.kill_game()
+        log.info("已执行：退出游戏与后台沙箱")
         return
 
     if not game_process.check_game_alive():

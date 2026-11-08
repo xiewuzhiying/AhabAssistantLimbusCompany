@@ -45,6 +45,8 @@ class Battle:
         self.cur_turn = 1
         self.is_tool = is_tool
         """是否由小工具初始化"""
+        self._defense_selection_pending = False
+        self._pending_defense_for_solo_state: DefenseForSoloState | None = None
 
     @staticmethod
     def to_battle():
@@ -107,6 +109,32 @@ class Battle:
 
         return new_time
 
+    def _confirm_defense_started(self) -> bool:
+        """交战界面已出现后，确认待提交的防御并且只计数一次。"""
+        if not self._defense_selection_pending:
+            return False
+        state = self._pending_defense_for_solo_state
+        self._defense_selection_pending = False
+        self._pending_defense_for_solo_state = None
+        if state is None:
+            return False
+        state.consume_turn()
+        log.info(f"小指良单通连续防御已确认开始，剩余 {state.remaining_turns} 回合")
+        if state.remaining_turns == 0:
+            log.info("本次镜牢的连续防御已完成，后续回合恢复普通战斗操作")
+        return True
+
+    def _submit_selected_defense(self) -> bool:
+        """保留已选防御；提交未生效时仅重试开始，不重新选技能。"""
+        if auto.find_element("battle/pause_assets.png", take_screenshot=True):
+            return self._confirm_defense_started()
+        if auto.find_element("battle/gear_right.png", threshold=0.9):
+            auto.key_press("enter")
+        sleep(0.5)
+        if auto.find_element("battle/pause_assets.png", take_screenshot=True):
+            return self._confirm_defense_started()
+        return False
+
     def _battle_operation(
         self,
         first_turn: bool,
@@ -116,46 +144,34 @@ class Battle:
         defense_for_solo_state: DefenseForSoloState | None = None,
         defense_for_solo_used_this_turn: bool = False,
     ) -> bool:
+        if self._defense_selection_pending:
+            return self._submit_selected_defense()
+        if auto.find_element("battle/pause_assets.png", take_screenshot=True):
+            return False
         auto.mouse_click_blank()
         use_limited_defense = (
             defense_for_solo_state is not None
             and defense_for_solo_state.remaining_turns > 0
-            and not defense_for_solo_used_this_turn
         )
         use_first_round_defense = (
             first_turn and defense_first_round and not defense_for_solo_used_this_turn
         )
-        limited_defense_succeeded = False
-        if (use_limited_defense or use_first_round_defense) and auto.find_element(
-            "battle/gear_left.png", threshold=0.9
-        ):
+        if use_limited_defense or use_first_round_defense or self.defense_all_time:
+            if not auto.find_element("battle/gear_left.png", threshold=0.9):
+                return False
             if use_limited_defense:
                 msg = f"小指良单通连续防御（剩余{defense_for_solo_state.remaining_turns}回合），开始战斗"
+            elif self.defense_all_time:
+                msg = "使用全员防御模式开始战斗"
             else:
                 msg = "第一回合全员防御，开始战斗"
             if self._defense_this_round() is False:
-                if use_limited_defense:
-                    msg = "小指良单通连续防御失败，本回合改为P+Enter"
-                else:
-                    msg = "第一回合全员防御失败，本场战斗改为P+Enter"
-                auto.key_press("p")
-                sleep(0.5)
-                auto.key_press("enter")
-            elif use_limited_defense:
-                defense_for_solo_state.consume_turn()
-                limited_defense_succeeded = True
-                log.info(f"小指良单通连续防御已执行，剩余 {defense_for_solo_state.remaining_turns} 回合")
-                if defense_for_solo_state.remaining_turns == 0:
-                    log.info("本次镜牢的连续防御已完成，后续回合恢复普通战斗操作")
-            sleep(2)
-            if not auto.find_element("battle/pause_assets.png", take_screenshot=True):
-                auto.key_press("p")
-                sleep(0.5)
-                auto.key_press("enter")
-        elif self.defense_all_time:
-            if auto.find_element("battle/gear_left.png", threshold=0.9):
-                msg = "使用全员防御模式开始战斗"
-                self._defense_this_round()
+                log.warning("防御技能选择失败，保留防御次数并等待重试")
+                return False
+            self._defense_selection_pending = True
+            self._pending_defense_for_solo_state = defense_for_solo_state if use_limited_defense else None
+            log.debug(msg)
+            return self._submit_selected_defense()
         elif (avoid_skill_3 or prioritize_skill_3) and auto.find_element(
             "battle/gear_left.png", threshold=0.9
         ):
@@ -190,7 +206,7 @@ class Battle:
                 else:
                     self.mouse_click_rate = False
         log.debug(msg)
-        return limited_defense_succeeded
+        return False
 
     @begin_and_finish_time_log(task_name="一次战斗")
     def fight(
@@ -220,10 +236,27 @@ class Battle:
 
         first_turn = True
         defense_for_solo_used_this_turn = False
+        self._defense_selection_pending = False
+        self._pending_defense_for_solo_state = None
         start_time = time.time()
+        defeat_pending = False
+        defense_turns_at_battle_start = (
+            defense_for_solo_state.remaining_turns if defense_for_solo_state is not None else 0
+        )
+
+        def confirm_retry_started() -> None:
+            nonlocal defeat_pending, first_turn
+            if not defeat_pending:
+                return
+            defeat_pending = False
+            first_turn = True
+            if defense_for_solo_state is not None:
+                # Retrying rolls back deaths and turns from this battle only.
+                defense_for_solo_state.remaining_turns = defense_turns_at_battle_start
 
         def perform_battle_operation() -> None:
             nonlocal defense_for_solo_used_this_turn
+            confirm_retry_started()
             limited_defense_succeeded = self._battle_operation(
                 first_turn=first_turn,
                 defense_first_round=defense_first_round,
@@ -274,6 +307,8 @@ class Battle:
 
             # 如果正在交战过程
             if auto.find_element("battle/pause_assets.png"):
+                confirm_retry_started()
+                self._confirm_defense_started()
                 sleep(2 * waiting)  # 战斗播片中增大间隔
                 chance = self.INIT_CHANCE
                 first_turn = False
@@ -282,10 +317,17 @@ class Battle:
 
             # 战斗失败重启
             if auto.find_element("battle/dead_all.png"):
+                if not defeat_pending:
+                    defeat_pending = True
+                    self.fail_times += 1
+                    start_time = time.time()
+                if self.fail_times >= 5:
+                    return False
                 dead_select = auto.find_element("battle/dead_all.png", find_type="image_with_multiple_targets")
                 if len(dead_select) == 3:
                     dead_select = sorted(dead_select, key=lambda y: y[1])
-                    auto.mouse_click(dead_select[1][0], dead_select[1][1])
+                    # The template locates the left border, outside the option's hit area.
+                    auto.mouse_click(dead_select[1][0] + 200 * cfg.set_win_size / 1440, dead_select[1][1])
                 else:
                     confirm_button = auto.find_element("battle/dead_all_confirm_assets.png")
                     try:
@@ -299,11 +341,9 @@ class Battle:
 
                 auto.click_element("battle/dead_all_confirm_assets.png")
                 sleep(1)
-                start_time = time.time()
-                self.fail_times += 1
                 defense_for_solo_used_this_turn = False
-                if self.fail_times >= 5:
-                    return False
+                self._defense_selection_pending = False
+                self._pending_defense_for_solo_state = None
                 continue
 
             if in_mirror and not cfg.fight_to_last_man and not infinite_battle:
@@ -679,6 +719,7 @@ class Battle:
 
     @staticmethod
     def _defense_this_round(move_back: bool = False) -> bool:
+        """选择并连接防御技能；返回成功不代表游戏已开始执行。"""
         try:
             scale = cfg.set_win_size / 1440
 
@@ -700,7 +741,7 @@ class Battle:
                 if cfg.simulator:
                     sleep(cfg.mouse_action_interval)
                 else:
-                    sleep(cfg.mouse_action_interval // 1.5)
+                    sleep(cfg.mouse_action_interval / 1.5)
 
             skill_list.insert(0, gear_left)
             skill_list.append([gear_right[0] + 5 * skill_nums * scale, gear_right[1] + 150 * scale])

@@ -41,4 +41,4 @@ Capture frame buffers from the game's Client Window drawable instead of the Root
 
 ### Lifecycle clarification (2026-11-08 review)
 
-Launch with `start_new_session=True`; terminate only the owned process group, including when its leader exits before its children. Do not run Python `preexec_fn` from the threaded Qt application. This removes the previous best-effort parent-death signal: abrupt AALC death is not guaranteed to reap descendants, and descendants that create another session remain outside process-group cleanup. Normal stop and close retain bounded group cleanup.
+Native Linux launches now use a unique systemd user service with `KillMode=control-group`. Its supervisor watches the AALC process through a pidfd and exits on owner death. systemd then reaps remaining service descendants, including processes that created a new session. Normal stop targets only the owned unit. This requires a running systemd user manager; no weaker launch fallback is used. A process explicitly migrated to another cgroup is outside this guarantee.

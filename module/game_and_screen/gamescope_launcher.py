@@ -11,6 +11,7 @@ from pathlib import Path
 from time import sleep
 from typing import Callable, Optional
 
+from module.game_and_screen.managed_session import ManagedSession
 from module.config import cfg
 from module.logger import log
 from utils.singletonmeta import SingletonMeta
@@ -28,6 +29,7 @@ class GamescopeLauncher(metaclass=SingletonMeta):
     def __init__(self):
         self._lifecycle_lock = threading.RLock()
         self._pgid: Optional[int] = None
+        self._session: ManagedSession | None = None
         self._process: Optional[subprocess.Popen] = None
         self._log_file = None
         self._steam_root: Optional[Path] = None
@@ -42,6 +44,9 @@ class GamescopeLauncher(metaclass=SingletonMeta):
     def process(self) -> Optional[subprocess.Popen]:
         return self._process
 
+    def owned_pids(self) -> list[int]:
+        return self._session.member_pids() if self._session else []
+
     def is_running(self) -> bool:
         """检查 Gamescope 子进程是否存活"""
         if self._process is None:
@@ -51,6 +56,9 @@ class GamescopeLauncher(metaclass=SingletonMeta):
     def terminate(self) -> None:
         """Stop only the process group created by this launcher, even after its leader exits."""
         with self._lifecycle_lock:
+            if self._session is not None:
+                self._session.stop()
+                self._session = None
             pgid = self._pgid
             if pgid is not None:
                 try:
@@ -541,9 +549,9 @@ class GamescopeLauncher(metaclass=SingletonMeta):
             log.info("Gamescope 实例已在运行中")
             return True
 
-        if self._process is not None or self._pgid is not None:
+        if self._process is not None or self._pgid is not None or self._session is not None:
             self.terminate()
-            if self._process is not None or self._pgid is not None:
+            if self._process is not None or self._pgid is not None or self._session is not None:
                 return False
 
         if not self.resolve_paths():
@@ -552,25 +560,17 @@ class GamescopeLauncher(metaclass=SingletonMeta):
         assert self._game_dir is not None
         self.ensure_steam_appid_file(self._game_dir)
 
-        cmd = self.build_command()
-        env = self.build_env()
-
-        log.info(f"启动 Gamescope 命令行: {' '.join(cmd)}")
         try:
+            cmd = self.build_command()
+            env = self.build_env()
+            log.info(f"启动 Gamescope 命令行: {' '.join(cmd)}")
             log_dir = Path("logs")
             log_dir.mkdir(parents=True, exist_ok=True)
             self._log_file = (log_dir / "gamescope.log").open("a", encoding="utf-8")
 
-            self._process = subprocess.Popen(
-                cmd,
-                cwd=str(self._game_dir),
-                env=env,
-                stdout=self._log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            self._pgid = self._process.pid
-            log.info(f"Gamescope 进程已创建，PID: {self._process.pid}")
+            self._session = ManagedSession()
+            self._process = self._session.start(cmd, env, self._game_dir, self._log_file)
+            log.info(f"Gamescope 服务客户端已创建，PID: {self._process.pid}")
             # 等待 2 秒检测子进程是否立即崩溃
             sleep(2)
             if not self.is_running():

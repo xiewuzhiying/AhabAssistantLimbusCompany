@@ -278,7 +278,7 @@ def main():
                 super().run()
             finally:
                 task_done.set()
-                # PR_SET_PDEATHSIG tracks the creating thread: retain it for cleanup.
+                # Keep the worker available until cooperative shutdown completes.
                 release_thread.wait(30)
 
     worker = Worker()
@@ -286,34 +286,7 @@ def main():
     ending = [False]
 
     def owned_cleanup():
-        proc = launcher.process
-        if not proc:
-            return
-        children = []
-        try:
-            children = psutil.Process(proc.pid).children(recursive=True)
-        except psutil.Error:
-            pass
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        for child in children:
-            try:
-                if child.is_running():
-                    child.kill()
-            except psutil.Error:
-                pass
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=5)
-        launcher._cleanup_xwayland_wrapper()
+        launcher.terminate()
 
     def finish(reason):
         if ending[0]:
@@ -365,12 +338,12 @@ def main():
         try:
             pid = launcher.process.pid if launcher.process else None
             procs = []
-            for process_id in [os.getpid(), pid]:
+            for process_id in set([os.getpid(), pid, *launcher.owned_pids()]):
                 if not process_id:
                     continue
                 try:
                     p = psutil.Process(process_id)
-                    for item in [p, *p.children(recursive=True)]:
+                    for item in [p]:
                         with item.oneshot():
                             procs.append(
                                 {

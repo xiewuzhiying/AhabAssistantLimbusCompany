@@ -1,4 +1,6 @@
 import logging
+import os
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -13,22 +15,51 @@ from utils.singletonmeta import SingletonMeta
 class OCR(metaclass=SingletonMeta):
     def __init__(self, logger: logging.Logger):
         self.logger = logger
-        self.engine = RapidOCR(
-            params={
-                "Det.engine_type": EngineType.ONNXRUNTIME,
-                "Det.lang_type": LangDet.CH,
-                "Det.model_type": ModelType.MOBILE,
-                "Det.ocr_version": OCRVersion.PPOCRV4,
-                "Rec.engine_type": EngineType.ONNXRUNTIME,
-                "Rec.lang_type": LangRec.CH,
-                "Rec.model_type": ModelType.MOBILE,
-                "Rec.ocr_version": OCRVersion.PPOCRV4,
-            },
-            config_path=r"assets\config\default_rapidocr.yaml",
-        )
+        self._engine: RapidOCR | None = None
+
+    @property
+    def engine(self) -> RapidOCR:
+        if self._engine is None:
+            self._engine = self._init_engine()
+        return self._engine
+
+    def _init_engine(self) -> RapidOCR:
+        xdg_cache = os.environ.get("XDG_CACHE_HOME")
+        cache_base = Path(xdg_cache) if xdg_cache else Path.home() / ".cache"
+        cache_dir = cache_base / "rapidocr"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+        params: dict[str, str | EngineType | LangDet | LangRec | ModelType | OCRVersion] = {
+            "Det.engine_type": EngineType.ONNXRUNTIME,
+            "Det.lang_type": LangDet.CH,
+            "Det.model_type": ModelType.MOBILE,
+            "Det.ocr_version": OCRVersion.PPOCRV4,
+            "Rec.engine_type": EngineType.ONNXRUNTIME,
+            "Rec.lang_type": LangRec.CH,
+            "Rec.model_type": ModelType.MOBILE,
+            "Rec.ocr_version": OCRVersion.PPOCRV4,
+        }
+        if cache_dir.exists():
+            params["Global.model_root_dir"] = str(cache_dir)
+
+        project_root = Path(__file__).resolve().parents[2]
+        config_path = project_root / "assets" / "config" / "default_rapidocr.yaml"
+        try:
+            return RapidOCR(
+                params=params,
+                config_path=str(config_path) if config_path.exists() else None,
+            )
+        except Exception as e:
+            self.logger.warning(f"使用自定义配置初始化 RapidOCR 失败，回退至默认配置: {e}")
+            return RapidOCR()
 
     def run(self, image: Image.Image | np.ndarray | str) -> RapidOCROutput:
         """执行OCR识别，支持Image对象、文件路径和np.ndarray对象"""
+        if image is None:
+            return RapidOCROutput()
         try:
             if isinstance(image, str):
                 with Image.open(image) as image_file:
@@ -60,7 +91,17 @@ class OCR(metaclass=SingletonMeta):
             # 自适应均衡化(均值化后更亮)
             clahe = createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             processed_image = clahe.apply(img_cv_gray)
-            results = self.engine(processed_image)
+            try:
+                results = self.engine(processed_image)
+            except Exception:
+                results = self.engine(image_array)
+            if not results.txts:
+                try:
+                    alt_results = self.engine(image_array)
+                    if alt_results.txts:
+                        results = alt_results
+                except Exception:
+                    pass
             self.log_results(results)
             return results
         except Exception as e:

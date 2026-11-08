@@ -1,5 +1,7 @@
 Global:
     text_score: 0.5
+    use_preprocess_img: false
+    use_vertical_padding: false
 
     use_det: true
     use_cls: true
@@ -17,6 +19,7 @@ Global:
     # 该路径仅在可视化绘制时才会被打开，本项目不使用；若将来启用可视化，改成本机真实字体即可
     font_path: "C:/Windows/Fonts/simhei.ttf"
     log_level: "info" # debug / info / warning / error / critical
+    model_root_dir: null
 
 EngineConfig:
     onnxruntime:

@@ -52,7 +52,10 @@ if not IS_WINDOWS:
 if not IS_WINDOWS:
     import importlib.util
 
-    _bz_spec = importlib.util.find_spec("backports.zstd")
+    try:
+        _bz_spec = importlib.util.find_spec("backports.zstd")
+    except ModuleNotFoundError:
+        _bz_spec = None
     if _bz_spec is not None and _bz_spec.submodule_search_locations:
         _bz_dir = Path(list(_bz_spec.submodule_search_locations)[0]).resolve()
         add_data.append((str(_bz_dir), "backports/zstd"))

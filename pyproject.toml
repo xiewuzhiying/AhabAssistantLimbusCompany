@@ -74,6 +74,7 @@ files = [
     "app/card/messagebox_custom.py",
     "app/base_tools.py",
     "app/language_manager.py",
+    "app/notification.py",
     "app/windows_toast.py",
     "app/announcement_board.py",
     "module/update/check_update.py",

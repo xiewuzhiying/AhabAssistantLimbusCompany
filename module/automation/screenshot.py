@@ -1,4 +1,5 @@
 import time
+from contextlib import nullcontext
 
 from PIL import Image
 
@@ -19,6 +20,8 @@ from module.game_and_screen import screen
 
 
 class ScreenShot:
+    _content_offset_cache: dict[tuple[int, int], int] = {}
+
     @staticmethod
     def take_screenshot(gray: bool = True) -> Image.Image | None:
         """
@@ -92,6 +95,9 @@ class ScreenShot:
                 log.debug("Linux 游戏窗口尚未绘制有效画面，等待下一帧")
                 return None
             except Exception as e:
+                if getattr(screen.handle, "is_gamescope", False):
+                    log.debug(f"隔离窗口截图失败，等待恢复：{e}")
+                    return None
                 log.debug(f"X11窗口截图失败，尝试全屏捕获，错误信息：{e}")
             try:
                 image = ScreenShot.take_screenshot_mss(gray)
@@ -136,15 +142,133 @@ class ScreenShot:
         except Exception:
             return False
 
+    @classmethod
+    def get_content_offset(cls, width: int, height: int) -> int | None:
+        """获取指定窗口分辨率下缓存的内容偏移"""
+        return cls._content_offset_cache.get((width, height))
+
     @staticmethod
-    def take_screenshot_x11(gray: bool = True) -> Image.Image:
-        """直接从 X 服务器读取游戏窗口内容"""
-        image = screen.handle.capture_window_image()
-        if image is None:
-            raise RuntimeError("窗口图像读取失败")
+    def _heuristic_offset(geo_height: int) -> int:
+        """按客户区高度与目标分辨率的差值估算内容区偏移"""
+        try:
+            target = int(cfg.set_win_size)
+        except Exception:
+            return 0
+        delta = geo_height - target
+        if 0 < delta <= 80:
+            return delta
+        return 0
+
+    @classmethod
+    def _resolve_content_offset(
+        cls,
+        geo_width: int,
+        geo_height: int,
+        img: Image.Image | None = None,
+    ) -> int:
+        """探测客户区内游戏画布的垂直偏移（结果按窗口尺寸缓存）。
+
+        Wine/Proton 的窗口装饰行为不稳定：有的启动会把自绘标题栏画进客户区
+        （游戏画布比目标分辨率矮一条），有的直接铺满客户区（游戏 UI 按
+        非 16:9 重排）。对候选偏移做模板匹配打分，取最优；画面上没有可
+        识别的主界面元素时不缓存结论，下一帧重新探测。
+        """
+        key = (geo_width, geo_height)
+        cached = cls._content_offset_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            target_h = int(cfg.set_win_size)
+        except Exception:
+            target_h = 1080
+        if geo_height == target_h:
+            cls._content_offset_cache[key] = 0
+            return 0
+
+        heuristic = cls._heuristic_offset(geo_height)
+        if img is None:
+            return heuristic
+
+        try:
+            import cv2
+            import numpy as np
+
+            scale = target_h / 1440.0
+            gray = np.asarray(img.convert("L"))
+        except Exception as e:
+            log.debug(f"内容区偏移探测预处理失败: {e}")
+            return heuristic
+
+        candidates = sorted({0, heuristic})
+        scored = []
+        for off in candidates:
+            if off >= geo_height:
+                continue
+            sub = gray[off:, :]
+            score = 0.0
+            for tpl_path in (
+                "assets/images/default/share/home/enkephalin_box_assets.png",
+                "assets/images/default/share/home/drive_assets.png",
+            ):
+                tpl = cv2.imread(tpl_path, cv2.IMREAD_GRAYSCALE)
+                if tpl is None:
+                    continue
+                t = cv2.resize(tpl, None, fx=scale, fy=scale)
+                if t.shape[0] >= sub.shape[0] or t.shape[1] >= sub.shape[1]:
+                    continue
+                res = cv2.matchTemplate(sub, t, cv2.TM_CCOEFF_NORMED)
+                _, mx, _, _ = cv2.minMaxLoc(res)
+                score = max(score, mx)
+            scored.append((score, off))
+        best_score, best_off = max(scored, default=(0.0, 0))
+        if best_score > 0.6:
+            cls._content_offset_cache[key] = best_off
+            log.debug(f"内容区偏移探测: {geo_width}x{geo_height} -> {best_off} (相似度 {best_score:.2f})")
+            return best_off
+        return heuristic
+
+    @classmethod
+    def take_screenshot_x11(cls, gray: bool = True, handle: object | None = None) -> Image.Image:
+        """针对 Gamescope 嵌套会话或普通 X11 客户端窗口，直接通过 ZPixmap 协议抓取裸像素缓冲区并转换。
+
+        规避根窗口 BadMatch 异常：直接在目标 Client Window (Drawable) 上调用 get_image。
+        支持 PIL.Image 零拷贝快速转换，保持截图只读无副作用。
+        """
+        if handle is None:
+            handle = screen.handle
+        if getattr(handle, "hwnd", 0) == 0:
+            raise RuntimeError("未找到游戏窗口句柄")
+
+        from Xlib import X
+
+        lock = getattr(handle, "lock", None)
+        with lock if lock is not None else nullcontext():
+            drawable = getattr(handle, "drawable", None)
+            if drawable is None:
+                drawable = getattr(handle, "window", None)
+            if drawable is None:
+                raise RuntimeError("未找到游戏窗口对象")
+            geo = drawable.get_geometry()
+            width, height, depth = geo.width, geo.height, geo.depth
+            if width <= 0 or height <= 0:
+                raise ValueError(f"无效的窗口几何尺寸: {width}x{height}")
+            if depth not in (24, 32):
+                raise ValueError(f"不支持的窗口颜色深度: {depth}")
+
+            raw_ximage = drawable.get_image(0, 0, width, height, X.ZPixmap, 0xFFFFFFFF)
+            if raw_ximage is None or getattr(raw_ximage, "data", None) is None:
+                raise RuntimeError("ZPixmap 抓取返回空缓冲区")
+
+            raw_data = raw_ximage.data
+
+        pil_img = Image.frombuffer("RGB", (width, height), raw_data, "raw", "BGRX", 0, 1)
+
+        offset = cls._resolve_content_offset(width, height, img=pil_img)
+        if offset > 0:
+            pil_img = pil_img.crop((0, offset, width, height))
         if gray:
-            image = image.convert("L")
-        return image
+            return pil_img.convert("L")
+        return pil_img
 
     @staticmethod
     def take_screenshot_mss(gray: bool = True) -> Image.Image:
@@ -356,7 +480,7 @@ class ScreenShot:
             try:
                 _, pid = win32process.GetWindowThreadProcessId(screen.handle.hwnd)
                 os.system(f"taskkill /F /PID {pid}")
-            except:
+            except Exception:
                 pass
             from tasks.base.script_task_scheme import init_game
 
@@ -476,3 +600,6 @@ class ScreenShot:
         if gray:
             image = image.convert("L")
         return image
+
+
+X11Screenshot = ScreenShot

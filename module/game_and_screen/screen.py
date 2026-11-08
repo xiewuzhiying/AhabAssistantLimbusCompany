@@ -411,6 +411,13 @@ class Screen(metaclass=SingletonMeta):
                 log.error(f"未能获取到游戏窗口: {self.title}")
                 return False
             else:
+                if not IS_WINDOWS and getattr(self.handle, "is_gamescope", False):
+                    try:
+                        from module.automation import auto
+
+                        auto.init_input()
+                    except Exception as e:
+                        log.debug(f"重新初始化输入模块失败: {e}")
                 return True
         except Exception as e:
             log.error(f"未能获取到游戏窗口: {e}")
@@ -455,9 +462,7 @@ class Screen(metaclass=SingletonMeta):
                 if (width, height) == target_size:
                     break
                 if attempt == 1:
-                    log.info(
-                        f"正在调整窗口尺寸: 当前 {width}x{height} -> 目标 {target_size[0]}x{target_size[1]}"
-                    )
+                    log.info(f"正在调整窗口尺寸: 当前 {width}x{height} -> 目标 {target_size[0]}x{target_size[1]}")
                 _set_win()
                 sleep(1)
             except Exception as e:
@@ -477,6 +482,10 @@ class Screen(metaclass=SingletonMeta):
         模板全部无法对齐。因此按候选客户区高度依次调整窗口，并用内容探测
         （模板匹配）确认画布恰为目标分辨率。
         """
+        if getattr(self.handle, "is_gamescope", False):
+            log.info("Gamescope 隔离环境下使用虚拟合成器输出分辨率，跳过桌面窗口装饰与置顶调整")
+            return
+
         if self.handle.isMinimized or not self.handle.isActive:
             self.handle.restore(activate=True)
         self.handle.setForeground()
@@ -497,18 +506,23 @@ class Screen(metaclass=SingletonMeta):
 
         target_h = int(cfg.set_win_size)
         target_w = int(target_h * 16 / 9)
-        content_offset_cache = getattr(self.handle, "_content_offset_cache", None)
+        from module.automation.screenshot import ScreenShot
+
         for client_h in (target_h + 50, target_h, target_h + 80, target_h + 30):
             self.handle.set_window_size(target_w, client_h)
             sleep(1.2)
-            img = self.handle.capture_window_image()
-            if img is None or content_offset_cache is None:
+            try:
+                img = ScreenShot.take_screenshot_x11(gray=False)
+            except Exception as e:
+                log.debug(f"对齐窗口大小时截图失败: {e}")
                 continue
-            offset = content_offset_cache.get((target_w, client_h))
+            if img is None:
+                continue
+            offset = ScreenShot.get_content_offset(target_w, client_h)
             if offset is not None and client_h - offset == target_h:
-                log.info(
-                    f"游戏画布已对齐目标分辨率: 客户区 {target_w}x{client_h}，内容区偏移 {offset}"
-                )
+                log.info(f"游戏画布已对齐目标分辨率: 客户区 {target_w}x{client_h}，内容区偏移 {offset}")
+                if hasattr(self.handle, "content_offset"):
+                    self.handle.content_offset = offset
                 break
         else:
             log.warning(

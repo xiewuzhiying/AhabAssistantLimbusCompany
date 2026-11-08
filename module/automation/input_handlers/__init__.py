@@ -146,3 +146,19 @@ class AbstractInput:
 
     def input_text(self, text: str) -> None:
         raise InterruptedError(f"未实现的输入方法 {self.__class__.__name__}.input_text")
+
+
+def __getattr__(name: str):
+    if name == "GamescopeXTestInput":
+        from .gamescope_input import GamescopeXTestInput
+
+        return GamescopeXTestInput
+    if name == "LinuxInput":
+        from .linux_input import LinuxInput
+
+        return LinuxInput
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = ["AbstractInput", "GamescopeXTestInput", "LinuxInput"]
+

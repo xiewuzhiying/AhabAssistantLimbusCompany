@@ -316,6 +316,11 @@ def search_road_from_road_map(hard_mode=False):
                 break
 
     bus_pos = auto.find_element("mirror/mybus_default_distance.png") or bus
+    if bus_pos is None and bus is None:
+        log.debug("未能定位到 Bus 节点位置，无法执行路线识别")
+        return False, []
+    if bus is None:
+        bus = bus_pos
     all_nodes = identify_nodes(bus[0])
     if not all_nodes:  # identify_nodes() 可能返回 None（如只剩得分低于阈值的 Boss 节点）
         log.warning("未识别到地图节点，无法规划路线")

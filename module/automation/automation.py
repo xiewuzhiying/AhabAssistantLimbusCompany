@@ -79,28 +79,20 @@ class Automation(metaclass=SingletonMeta):
                 self.input_handler = SimulatorControl.connection_device
         else:
             input_type = cfg.win_input_type
-            if not IS_WINDOWS and input_type in ("background", "window_move"):
-                # Linux 无 Win32 后台消息通道，统一回退到前台输入
-                from .input_handlers.linux_input import LinuxInput
+            if not IS_WINDOWS:
+                from .input_handlers.gamescope_input import GamescopeXTestInput
 
-                log.debug(f"Linux 下不支持 {input_type} 输入模式，使用前台输入模块")
-                self.input_handler = LinuxInput()
+                self.input_handler = GamescopeXTestInput()
             elif input_type == "background":
                 from .input_handlers.input import BackgroundInput
 
                 log.debug("使用后台点击模块")
                 self.input_handler = BackgroundInput()
             elif input_type == "foreground":
-                if not IS_WINDOWS:
-                    from .input_handlers.linux_input import LinuxInput
+                from .input_handlers.input import Input
 
-                    log.debug("使用前台点击模块 (Linux/pyautogui)")
-                    self.input_handler = LinuxInput()
-                else:
-                    from .input_handlers.input import Input
-
-                    log.debug("使用前台点击模块")
-                    self.input_handler = Input()
+                log.debug("使用前台点击模块")
+                self.input_handler = Input()
             elif input_type == "window_move":
                 from .input_handlers.input import WindowMoveInput
 
@@ -112,9 +104,9 @@ class Automation(metaclass=SingletonMeta):
 
                 self.input_handler = BackgroundInput()
             else:
-                from .input_handlers.linux_input import LinuxInput
+                from .input_handlers.gamescope_input import GamescopeXTestInput
 
-                self.input_handler = LinuxInput()
+                self.input_handler = GamescopeXTestInput()
         assert isinstance(self.input_handler, AbstractInput), "输入处理器必须是AbstractInput的实例"
         self.set_pause = self.input_handler.set_pause
         self.wait_pause = self.input_handler.wait_pause
@@ -413,7 +405,7 @@ class Automation(metaclass=SingletonMeta):
                         pid = screen.handle.pid
                     if pid:
                         kill_pid(pid)
-                except:
+                except Exception:
                     pass
                 from tasks.base.script_task_scheme import init_game
 
@@ -560,6 +552,11 @@ class Automation(metaclass=SingletonMeta):
         return False
 
     def _run_ocr_for_text(self, my_crop=None, only_text=False, additional_stack=0):
+        if self.screenshot is None:
+            self.take_screenshot()
+        if self.screenshot is None:
+            return False if only_text else {}
+
         if my_crop is not None:
             cropped_image = self.screenshot.crop(my_crop)
             ocr_result = ocr.run(cropped_image)
@@ -670,6 +667,11 @@ class Automation(metaclass=SingletonMeta):
         """
         从屏幕截图中提取文字
         """
+        if self.screenshot is None:
+            self.take_screenshot()
+        if self.screenshot is None:
+            return []
+
         if my_crop is not None:
             # 根据my_crop（为左上与右下四个坐标），截取self.screenshot的部分区域进行ocr
             cropped_image = self.screenshot.crop(my_crop)
@@ -737,7 +739,7 @@ class Automation(metaclass=SingletonMeta):
             return result
         except Exception as e:
             error_message = str(e)
-            if "cv::flann" in error_message:
+            if "cv::flann" in error_message or "randShuffle" in error_message or "knnMatch" in error_message:
                 pass
             else:
                 log.error(f"匹配图片特征失败:{e}")

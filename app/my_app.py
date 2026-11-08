@@ -532,6 +532,17 @@ class MainWindow(FramelessWindow):
             else:
                 e.ignore()
                 return
+
+        from module.platform_compat import IS_WINDOWS
+
+        if not IS_WINDOWS:
+            try:
+                from module.game_and_screen import game_process
+
+                game_process.kill_game()
+            except Exception as ex:
+                log.warning(f"退出程序时终止游戏失败: {ex}")
+
         return super().closeEvent(e)
 
     def changeEvent(self, event):

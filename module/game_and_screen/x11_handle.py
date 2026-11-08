@@ -5,17 +5,46 @@
 """
 
 import functools
+import os
+import socket
 import threading
 import time
+from pathlib import Path
 
-import numpy as np
+import psutil
+import Xlib.support.unix_connect as _xlib_unix_connect
 from Xlib import XK, X, display
-from Xlib.error import XError
+from Xlib.error import ConnectionClosedError, DisplayConnectionError, XError
 from Xlib.ext import randr, xtest
 from Xlib.protocol import event as xevent
 
 from module.game_and_screen.screen import Handle
 from module.logger import log
+
+# 猴子补丁：为 python-xlib 增加 Linux 抽象套接字（abstract unix domain socket）自动回退能力。
+# Gamescope / Xwayland 在容器或非 FHS 环境下可能仅监听抽象套接字（@/tmp/.X11-unix/Xn），
+# 磁盘上的文件套接字不可达时通过抽象套接字建立连接。
+_orig_get_unix_socket = _xlib_unix_connect._get_unix_socket
+
+
+def _abstract_fallback_get_unix_socket(address):
+    try:
+        return _orig_get_unix_socket(address)
+    except Exception:
+        if isinstance(address, str) and address.startswith("/tmp/.X11-unix/X"):
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            try:
+                s.connect("\0" + address)
+                s.settimeout(None)
+                return s
+            except Exception:
+                s.close()
+                raise
+        raise
+
+
+_xlib_unix_connect._get_unix_socket = _abstract_fallback_get_unix_socket
 
 # WM_STATE 状态码
 NormalState = 1
@@ -55,6 +84,117 @@ def reset_serialization_lock() -> None:
     _XLIB_LOCK = threading.RLock()
 
 
+def _read_proc_environ(pid: int, proc_root: Path = Path("/proc")) -> dict[str, str]:
+    """读取 /proc/<pid>/environ 中的环境变量字典。"""
+    proc_environ_path = proc_root / str(pid) / "environ"
+    if not proc_environ_path.exists():
+        return {}
+    try:
+        content = proc_environ_path.read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+        return {}
+
+    environ: dict[str, str] = {}
+    for item in content.split(b"\x00"):
+        if not item:
+            continue
+        if b"=" in item:
+            k, v = item.split(b"=", 1)
+            try:
+                environ[k.decode("utf-8", errors="replace")] = v.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+    return environ
+
+
+def get_configured_gamescope_display() -> str | None:
+    """获取通过环境变量或配置显式指定的 Gamescope DISPLAY 端口。"""
+    for env_var in ("AALC_GAMESCOPE_DISPLAY", "GAMESCOPE_DISPLAY"):
+        val = os.environ.get(env_var)
+        if val and val.strip():
+            return val.strip()
+    try:
+        from module.config import cfg
+
+        cfg_val = getattr(cfg, "gamescope_display", None)
+        if cfg_val and str(cfg_val).strip():
+            return str(cfg_val).strip()
+    except Exception:
+        pass
+    return None
+
+
+def detect_gamescope_displays(
+    target_process_names: tuple[str, ...] = ("LimbusCompany.exe", "LimbusCompany"),
+    gamescope_process_name: str = "gamescope",
+    fallback_ports: tuple[str, ...] = (":1", ":2"),
+    proc_root: Path = Path("/proc"),
+) -> list[str]:
+    """探测 Gamescope 嵌套环境中的 DISPLAY 端口列表。
+
+    优先级:
+    1. 显式环境变量 / 配置: AALC_GAMESCOPE_DISPLAY, GAMESCOPE_DISPLAY, cfg.gamescope_display
+    2. 运行中游戏进程 (如 LimbusCompany.exe) 的 /proc/<pid>/environ 中的 DISPLAY
+    3. gamescope 进程的子进程 /proc/<pid>/environ 中的 DISPLAY
+    4. 兜底候选端口 (如 :1, :2)
+    """
+    candidates: list[str] = []
+
+    # 1. 显式环境变量 / 配置
+    cfg_disp = get_configured_gamescope_display()
+    if cfg_disp and cfg_disp not in candidates:
+        candidates.append(cfg_disp)
+
+    # 2. 检查运行中进程的 /proc/<pid>/environ
+    gamescope_pids: list[int] = []
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                name = (proc.info.get("name") or "").casefold()
+                cmdline = " ".join(proc.info.get("cmdline") or []).casefold()
+                pid = proc.info.get("pid")
+                if not pid:
+                    continue
+
+                # 检查是否为目标游戏进程
+                is_game = any(tgt.casefold() in name or tgt.casefold() in cmdline for tgt in target_process_names)
+                if is_game:
+                    proc_env = _read_proc_environ(pid, proc_root=proc_root)
+                    disp = proc_env.get("DISPLAY")
+                    if disp and disp not in candidates:
+                        candidates.append(disp)
+
+                # 记录 gamescope 进程
+                if gamescope_process_name.casefold() in name or gamescope_process_name.casefold() in cmdline:
+                    gamescope_pids.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        log.debug(f"遍历进程探测 Gamescope 失败: {e}")
+
+    # 3. 检查 gamescope 进程及其子进程
+    for gpid in gamescope_pids:
+        try:
+            gproc = psutil.Process(gpid)
+            for child in gproc.children(recursive=True):
+                try:
+                    cenv = _read_proc_environ(child.pid, proc_root=proc_root)
+                    cdisp = cenv.get("DISPLAY")
+                    if cdisp and cdisp not in candidates:
+                        candidates.append(cdisp)
+                except Exception:
+                    continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    # 4. 兜底端口探测（即使未找到 gamescope 进程名也进行兜底）
+    for fb in fallback_ports:
+        if fb not in candidates:
+            candidates.append(fb)
+
+    return candidates
+
+
 def _net_wm_state_atoms(disp):
     return [
         disp.intern_atom("_NET_WM_STATE", True),
@@ -77,23 +217,128 @@ class X11Handle(Handle):
           bring_window_into_view` 等纯几何方法直接继承自 `Handle` 基类。
     """
 
-    def __init__(self):
+    _disp: display.Display | None = None
+    _display_name: str | None = None
+    _is_gamescope: bool = False
+
+    def __init__(self, display_name: str | None = None):
         super().__init__()
         self._hwnd: int = 0
         self._transparent = False
-        self._disp: display.Display | None = None
+        self._display_name = display_name
+        self._is_gamescope = False
+        if self._display_name is not None:
+            self._is_gamescope = self._display_name in detect_gamescope_displays()
+        self._disp = None
         try:
-            self._disp = display.Display()
+            self._disp = display.Display(self._display_name)
+            if self._display_name is None and self._disp is not None:
+                try:
+                    self._display_name = self._disp.get_display_name()
+                except Exception:
+                    pass
         except Exception as e:
             log.error(f"无法连接 X 显示服务器（请确认 X11/XWayland 会话）: {e}")
         self._enum_windows_list: list[str] = []
-        self._content_offset_cache: dict[tuple[int, int], int] = {}
+        self._content_offset: int = 0
+
+    @property
+    def display_name(self) -> str | None:
+        """当前连接的 X11 Display 名称 (例如 ':0', ':1')"""
+        if self._display_name is not None:
+            return self._display_name
+        if self._disp is not None:
+            try:
+                return self._disp.get_display_name()
+            except Exception:
+                pass
+        return os.environ.get("DISPLAY")
+
+    @property
+    def is_gamescope(self) -> bool:
+        """是否处于 Gamescope 嵌套环境中"""
+        if self._is_gamescope:
+            return True
+        if os.environ.get("GAMESCOPE_WAYLAND_DISPLAY") or os.environ.get("GAMESCOPE_DISPLAY"):
+            return True
+        return False
+
+    def _switch_display(self, new_display_name: str) -> bool:
+        """切换到新的 X11 Display 连接"""
+        try:
+            new_disp = display.Display(new_display_name)
+        except Exception as e:
+            log.debug(f"无法连接到 X 显示服务 {new_display_name}: {e}")
+            return False
+
+        if self._disp is not None:
+            try:
+                self._disp.close()
+            except Exception:
+                pass
+        self._disp = new_disp
+        self._display_name = new_display_name
+        return True
+
+    def _invalidate_connection(self) -> None:
+        """丢弃失效连接及其窗口状态，保留目标 DISPLAY 和隔离模式用于重连。"""
+        old_display = self._disp
+        self._disp = None
+        self._hwnd = 0
+        self._content_offset = 0
+        if old_display is not None:
+            try:
+                old_display.close()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        """关闭当前 X11 Display 连接并重置状态。"""
+        with _XLIB_LOCK:
+            self._invalidate_connection()
+            self._is_gamescope = False
 
     # ------------------------------------------------------------------ 基础
     @property
+    def display(self) -> display.Display:
+        """暴露底层 X11 Display 连接"""
+        return self._dpy
+
+    @property
+    def window(self):
+        """暴露当前目标 X11 客户端窗口对象"""
+        return self._window_obj()
+
+    @property
+    def drawable(self):
+        """暴露当前目标 X11 可绘制对象 (Drawable)"""
+        return self._window_obj()
+
+    @property
+    def lock(self) -> threading.RLock:
+        """暴露用于 Xlib 请求序列化的重入锁"""
+        return _XLIB_LOCK
+
+    @property
+    def content_offset(self) -> int:
+        """游戏画布相对于窗口客户区顶部的 Y 偏移量（像素）"""
+        return getattr(self, "_content_offset", 0)
+
+    @content_offset.setter
+    def content_offset(self, value: int) -> None:
+        self._content_offset = max(0, int(value))
+
+    @_serialized
+    def get_geometry(self):
+        """获取当前客户端窗口的几何信息"""
+        if self.hwnd == 0:
+            raise RuntimeError("未找到游戏窗口句柄")
+        return self._window_obj().get_geometry()
+
+    @property
     def _dpy(self) -> display.Display:
         if self._disp is None:
-            self._disp = display.Display()
+            self._disp = display.Display(self._display_name)
         return self._disp
 
     @property
@@ -105,130 +350,209 @@ class X11Handle(Handle):
         wid = self._hwnd if wid is None else wid
         return self._dpy.create_resource_object("window", wid)
 
-    def _get_atom_value(self, win, atom_name: str):
-        atom = self._dpy.intern_atom(atom_name, True)
-        prop = win.get_full_property(atom, X.AnyPropertyType)
-        if prop is None or prop.value is None or len(prop.value) == 0:
-            return None
-        return prop.value
-
-    @staticmethod
-    def _heuristic_offset(geo_height: int) -> int:
-        """按客户区高度与目标分辨率的差值估算内容区偏移"""
+    def _get_atom_value(self, win, atom_name: str, dpy: display.Display | None = None):
+        d = dpy if dpy is not None else self._dpy
         try:
-            from module.config import cfg
-
-            target = int(cfg.set_win_size)
+            atom = d.intern_atom(atom_name, True)
+            if not atom:
+                return None
+            prop = win.get_full_property(atom, X.AnyPropertyType)
+            if prop is None or prop.value is None or len(prop.value) == 0:
+                return None
+            return prop.value
         except Exception:
-            return 0
-        delta = geo_height - target
-        if 0 < delta <= 80:
-            return delta
-        return 0
-
-    def _known_content_offset(self, geo_width: int, geo_height: int) -> int:
-        """读取已探测的内容区偏移；未探测时退回算术启发式（不触发探测）"""
-        cached = self._content_offset_cache.get((geo_width, geo_height))
-        if cached is not None:
-            return cached
-        return self._heuristic_offset(geo_height)
-
-    def _resolve_content_offset(self, geo_width: int, geo_height: int, img) -> int:
-        """探测客户区内游戏画布的垂直偏移（结果按窗口尺寸缓存）。
-
-        Wine/Proton 的窗口装饰行为不稳定：有的启动会把自绘标题栏画进客户区
-        （游戏画布比目标分辨率矮一条），有的直接铺满客户区（游戏 UI 按
-        非 16:9 重排）。对候选偏移做模板匹配打分，取最优；画面上没有可
-        识别的主界面元素时不缓存结论，下一帧重新探测。
-        """
-        key = (geo_width, geo_height)
-        cached = self._content_offset_cache.get(key)
-        if cached is not None:
-            return cached
-        try:
-            import cv2
-
-            from module.config import cfg
-
-            scale = int(cfg.set_win_size) / 1440
-            gray = np.asarray(img.convert("L"))
-        except Exception as e:
-            log.debug(f"内容区偏移探测失败: {e}")
-            return self._heuristic_offset(geo_height)
-
-        candidates = sorted({0, self._heuristic_offset(geo_height)})
-        scored = []
-        for off in candidates:
-            if off >= geo_height:
-                continue
-            sub = gray[off:, :]
-            score = 0.0
-            for tpl_path in (
-                "assets/images/default/share/home/enkephalin_box_assets.png",
-                "assets/images/default/share/home/drive_assets.png",
-            ):
-                tpl = cv2.imread(tpl_path, cv2.IMREAD_GRAYSCALE)
-                if tpl is None:
-                    continue
-                t = cv2.resize(tpl, None, fx=scale, fy=scale)
-                if t.shape[0] >= sub.shape[0] or t.shape[1] >= sub.shape[1]:
-                    continue
-                res = cv2.matchTemplate(sub, t, cv2.TM_CCOEFF_NORMED)
-                _, mx, _, _ = cv2.minMaxLoc(res)
-                score = max(score, mx)
-            scored.append((score, off))
-        best_score, best_off = max(scored, default=(0.0, 0))
-        if best_score > 0.6:
-            self._content_offset_cache[key] = best_off
-            log.debug(f"内容区偏移探测: {geo_width}x{geo_height} -> {best_off} (相似度 {best_score:.2f})")
-            return best_off
-        return self._heuristic_offset(geo_height)
+            return None
 
     # ------------------------------------------------------------------ 查找
+    def _try_display(
+        self,
+        disp_name: str | None,
+        title: str = "LimbusCompany",
+        class_name: str = "UnityWndClass",
+        is_gamescope: bool | None = None,
+    ) -> int:
+        """尝试在指定 DISPLAY 上查找游戏窗口并建立连接。
+
+        - disp_name 为 None 时，复用当前 Display 连接；
+        - 若指定了 disp_name 且不同于当前 Display，则新建连接；
+        - 匹配成功时更新 self._hwnd, self._display_name, self._disp 及 self._is_gamescope 并返回 wid；
+        - 未匹配或连接失败时返回 0。
+        """
+        # 1. 复用当前连接
+        if disp_name is None or (disp_name == self._display_name and self._disp is not None):
+            candidates = self._safe_enum_windows()
+            wid = self._match_game_window(candidates, title, class_name)
+            if wid:
+                self._hwnd = wid
+                if is_gamescope is not None:
+                    self._is_gamescope = is_gamescope
+                self._log_found_window(candidates)
+                return wid
+            # 枚举期间连接可能断开。只有连接失效时才重新连接同一 DISPLAY；
+            # 活连接中暂时没有窗口（如游戏加载中）不应触发重连。
+            if self._disp is not None or disp_name is None:
+                return 0
+
+        # 2. 建立新连接探测
+        try:
+            probe_disp = display.Display(disp_name)
+        except Exception as e:
+            log.debug(f"无法连接到显示服务 {disp_name}: {e}")
+            return 0
+
+        try:
+            candidates = self._safe_enum_windows(probe_disp)
+            wid = self._match_game_window(candidates, title, class_name)
+            if wid:
+                if self._disp is not None:
+                    try:
+                        self._disp.close()
+                    except Exception:
+                        pass
+                self._disp = probe_disp
+                self._display_name = disp_name
+                self._hwnd = wid
+                if is_gamescope is not None:
+                    self._is_gamescope = is_gamescope
+                else:
+                    self._is_gamescope = disp_name in detect_gamescope_displays()
+                self._log_found_window(candidates)
+                return wid
+            else:
+                try:
+                    probe_disp.close()
+                except Exception:
+                    pass
+                return 0
+        except Exception as e:
+            log.debug(f"在显示服务 {disp_name} 枚举窗口失败: {e}")
+            try:
+                probe_disp.close()
+            except Exception:
+                pass
+            return 0
+
     @_serialized
-    def init_handle(self, title: str = "LimbusCompany", class_name: str = "UnityWndClass") -> int:
-        """获取窗口句柄。Linux 下只接受精确的游戏标题或明确的游戏类名。"""
+    def init_handle(
+        self,
+        title: str = "LimbusCompany",
+        class_name: str = "UnityWndClass",
+        display_name: str | None = None,
+    ) -> int:
+        """获取窗口句柄。Linux 下只接受精确的游戏标题或明确的游戏类名。
+
+        支持显式指定 display_name、配置优先探测与自适应探测 Gamescope 嵌套环境。
+        """
         self._hwnd = 0
         self._enum_windows_list.clear()
+
+        # 1. 显式指定 Display
+        if display_name:
+            is_gs = display_name in detect_gamescope_displays()
+            wid = self._try_display(display_name, title, class_name, is_gamescope=is_gs)
+            if wid:
+                return wid
+            log.error(f"在指定的 X 显示服务 ({display_name}) 中未能获取到游戏窗口", stacklevel=3)
+            return 0
+
+        # 2. 配置/环境变量显式指定的 Gamescope DISPLAY 优先于宿主默认 DISPLAY 探测
+        configured_gs = get_configured_gamescope_display()
+        if configured_gs:
+            log.debug(f"优先探测配置/环境变量指定的 Gamescope DISPLAY: {configured_gs}")
+            wid = self._try_display(configured_gs, title, class_name, is_gamescope=True)
+            if wid:
+                log.info(f"成功连接至配置指定的 Gamescope DISPLAY={configured_gs} (wid={wid})")
+                return wid
+
+            self._is_gamescope = True
+            return 0
+
+        # 3. 自适应优先探测 Gamescope 嵌套 DISPLAY
+        gs_candidates = detect_gamescope_displays()
+        tried = {configured_gs, os.environ.get("DISPLAY")}
+        for cand in gs_candidates:
+            if cand in tried:
+                continue
+            tried.add(cand)
+            log.debug(f"尝试探测 Gamescope 候选 DISPLAY: {cand}")
+            wid = self._try_display(cand, title, class_name, is_gamescope=True)
+            if wid:
+                log.info(f"检测到 Gamescope 嵌套环境，已切换至 DISPLAY={cand} (wid={wid})")
+                return wid
+
+        self._is_gamescope = True
+        log.error("未能获取到隔离游戏窗口", stacklevel=3)
+        return 0
+
+    def _safe_enum_windows(self, dpy: display.Display | None = None) -> list[dict]:
         try:
-            candidates = self._enum_windows()
+            if dpy is None:
+                return self._enum_windows()
+            return self._enum_windows(dpy=dpy)
         except Exception as e:
+            if isinstance(e, (ConnectionClosedError, DisplayConnectionError, ConnectionError, OSError, RuntimeError)):
+                if dpy is None or dpy is self._disp:
+                    self._invalidate_connection()
             log.error(f"枚举窗口时发生错误: {e}")
-            candidates = []
+            return []
 
+    def _match_game_window(
+        self,
+        candidates: list[dict],
+        title: str = "LimbusCompany",
+        class_name: str = "UnityWndClass",
+    ) -> int:
+        """从候选窗口列表中筛选匹配的游戏客户窗口。"""
         title_l = self._normalize_window_name(title)
-        # 游戏可能显示为 "LimbusCompany" 或 "Limbus Company"；只做格式归一化
-        # 后的精确匹配，不能使用 substring，否则 AALC 自己的标题也会命中。
+        class_l = (class_name or "").casefold()
+        matched: list[dict] = []
+
+        # 1. 优先按归一化标题匹配
         for info in candidates:
-            if title_l and self._normalize_window_name(info["title"]) == title_l:
-                self._hwnd = info["wid"]
-                break
+            if title_l and self._normalize_window_name(info.get("title", "")) == title_l:
+                matched.append(info)
 
-        # 某些 Wine 窗口没有标题，只暴露包含 Limbus 的 WM_CLASS；仅在标题
-        # 为空时启用此兜底，避免匹配 AALC/浏览器标题中的 “Limbus Company”。
-        if self._hwnd == 0:
+        # 2. 若标题未匹配，在无标题窗口中按 class_name 或 "limbus" 兜底
+        if not matched:
             for info in candidates:
-                if not info["title"].strip() and "limbus" in info["cls"].casefold():
-                    self._hwnd = info["wid"]
-                    break
+                cls = info.get("cls", "").casefold()
+                if not info.get("title", "").strip():
+                    if (class_l and class_l in cls) or "limbus" in cls:
+                        matched.append(info)
 
-        if self._hwnd:
-            info = next((c for c in candidates if c["wid"] == self._hwnd), None)
-            log.debug(
-                f"找到游戏窗口: wid={self._hwnd}, class={info['cls'] if info else '?'}, title={info['title'] if info else '?'}",
-                stacklevel=3,
-            )
-        else:
-            log.error("未能获取到游戏窗口", stacklevel=3)
-            log.debug(f"枚举窗口列表: {self._enum_windows_list}", stacklevel=3)
-        return self._hwnd
+        if not matched:
+            return 0
+
+        # 在匹配到的候选窗口中挑选最优客户窗口：
+        # 1. 优先有效几何尺寸窗口（> 1x1，过滤 Wine 内部 dummy 窗口）
+        # 2. 优先匹配指定 class_name 的窗口
+        # 3. 同尺寸下优先更深层级的真实 Client Window（相对于框架窗口）
+        # 4. 几何面积优先
+        def _score(c: dict) -> tuple[int, int, int, int]:
+            w = c.get("width", 1920)
+            h = c.get("height", 1080)
+            has_valid_size = 1 if (w > 1 and h > 1) else 0
+            has_class = 1 if (class_l and class_l in c.get("cls", "").casefold()) else 0
+            depth = c.get("depth", 0)
+            area = w * h
+            return (has_valid_size, has_class, depth, area)
+
+        best = max(matched, key=_score)
+        return best["wid"]
+
+    def _log_found_window(self, candidates: list[dict]) -> None:
+        info = next((c for c in candidates if c["wid"] == self._hwnd), None)
+        log.debug(
+            f"找到游戏窗口: wid={self._hwnd}, class={info['cls'] if info else '?'}, title={info['title'] if info else '?'}",
+            stacklevel=3,
+        )
 
     @staticmethod
     def _normalize_window_name(value: str) -> str:
         """归一化 X11 窗口标题，兼容游戏标题中的空格和大小写差异。"""
         return "".join(char for char in (value or "").casefold() if char.isalnum())
 
-    def _enum_windows(self) -> list[dict]:
+    def _enum_windows(self, dpy: display.Display | None = None) -> list[dict]:
         """遍历窗口树收集窗口信息。
 
         X11 会话下 KWin 会把受管客户窗口重新父化到框架窗口之下（客户窗口
@@ -236,9 +560,11 @@ class X11Handle(Handle):
         全部受管窗口。结果按深度降序排列：同名的框架与客户窗口中，
         更深的是真实客户窗口（几何不含装饰）。
         """
+        d = dpy if dpy is not None else self._dpy
         results: list[dict] = []
         seen: set[int] = set()
-        pending: list[tuple[object, int]] = [(self._root, 0)]
+        root = d.screen().root
+        pending: list[tuple[object, int]] = [(root, 0)]
         while pending:
             parent, depth = pending.pop(0)
             if depth > 4:
@@ -257,19 +583,33 @@ class X11Handle(Handle):
                     wm_class = win.get_wm_class()
                     if wm_class:
                         cls = f"{wm_class[0]}.{wm_class[1]}"
-                    title = self._window_title(win)
+                    title = self._window_title(win, dpy=d)
                     if not title and not cls:
                         continue
+                    try:
+                        geo = win.get_geometry()
+                        w, h = geo.width, geo.height
+                    except XError:
+                        w, h = 0, 0
                 except XError:
                     continue
-                results.append({"wid": win.id, "cls": cls, "title": title or "", "depth": depth})
+                results.append(
+                    {
+                        "wid": win.id,
+                        "cls": cls,
+                        "title": title or "",
+                        "depth": depth,
+                        "width": w,
+                        "height": h,
+                    }
+                )
                 if title:
                     self._enum_windows_list.append(f"wid: {win.id}, class_name: {cls}, window_text: {title}")
         results.sort(key=lambda r: -r["depth"])
         return results
 
-    def _window_title(self, win) -> str:
-        value = self._get_atom_value(win, "_NET_WM_NAME")
+    def _window_title(self, win, dpy: display.Display | None = None) -> str:
+        value = self._get_atom_value(win, "_NET_WM_NAME", dpy=dpy)
         if value:
             try:
                 return value.decode("utf-8", errors="replace")
@@ -296,13 +636,13 @@ class X11Handle(Handle):
         else:
             try:
                 self._window_obj(self._hwnd).get_attributes()
-            except (XError, RuntimeError) as e:
+            except (XError, RuntimeError, ConnectionClosedError, DisplayConnectionError, ConnectionError, OSError) as e:
                 # RuntimeError：X 连接应答流错乱，需重建连接后重新查找窗口
                 log.warning(
                     f"窗口句柄无效或 X 连接异常（{type(e).__name__}），重新获取, 当前句柄为 {self._hwnd}",
                     stacklevel=3,
                 )
-                self._disp = None
+                self._invalidate_connection()
                 self.init_handle()
                 if self._hwnd:
                     log.info(f"重新获取窗口句柄成功, 新句柄为 {self._hwnd}", stacklevel=3)
@@ -363,6 +703,8 @@ class X11Handle(Handle):
     # ------------------------------------------------------------------ 几何
     def _frame_extents(self, win) -> tuple[int, int, int, int]:
         """窗口装饰边框 (left, right, top, bottom)"""
+        if self.is_gamescope:
+            return 0, 0, 0, 0
         value = self._get_atom_value(win, "_NET_FRAME_EXTENTS")
         if value and len(value) >= 4:
             return int(value[0]), int(value[1]), int(value[2]), int(value[3])
@@ -384,9 +726,9 @@ class X11Handle(Handle):
             geo = win.get_geometry()
             pos_x, pos_y = self._root_position(win)
             if client:
-                # 返回内容区（扣除 Wine 自绘标题栏）在屏幕上的投影；
+                # 返回内容区（扣除外部由 ScreenShot 探测并同步的 content_offset）在屏幕上的投影；
                 # 底边保持客户区真实底边，高度即 geo.height - offset
-                offset = self._known_content_offset(geo.width, geo.height)
+                offset = self.content_offset
                 return (pos_x, pos_y + offset, pos_x + geo.width, pos_y + geo.height)
             left, right, top, bottom = self._frame_extents(win)
             return (
@@ -625,30 +967,3 @@ class X11Handle(Handle):
         if not self._transparent and transparent:
             log.debug("Linux 下不支持窗口透明/鼠标穿透，已跳过")
         self._transparent = transparent
-
-    @_serialized
-    def capture_window_image(self):
-        """直接从 X 服务器读取窗口内容（对被遮挡的窗口通常也有效）。
-
-        Returns:
-            PIL.Image 或 None
-        """
-        if self.hwnd == 0:
-            return None
-        try:
-            from PIL import Image
-
-            win = self._window_obj()
-            geo = win.get_geometry()
-            img = win.get_image(0, 0, geo.width, geo.height, X.ZPixmap, 0xFFFFFFFF)
-            if geo.depth not in (24, 32, 16):
-                log.debug(f"不支持的窗口颜色深度: {geo.depth}")
-                return None
-            mode = "BGRX" if geo.depth in (24, 32) else "BGR;16"
-            full = Image.frombytes("RGB", (geo.width, geo.height), img.data, "raw", mode)
-            # 跳过 Wine 自绘标题栏，保证截图与 1080p 模板对齐
-            offset = self._resolve_content_offset(geo.width, geo.height, full)
-            return full.crop((0, offset, geo.width, geo.height))
-        except Exception as e:
-            log.debug(f"读取窗口图像失败: {e}")
-            return None

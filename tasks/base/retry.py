@@ -7,7 +7,7 @@ from module.automation import auto
 from module.config import cfg
 from module.game_and_screen import screen
 from module.logger import log
-from module.platform_compat import IS_WINDOWS, kill_pid
+from module.platform_compat import IS_LINUX, IS_WINDOWS, kill_pid
 from utils.utils import check_game_running
 
 _last_title_screen_tap_time = 0.0
@@ -92,14 +92,10 @@ def kill_game():
             return
         connection_device.close_current_app()
         return
-    # 通过窗口句柄/进程名关闭游戏进程（Windows 与 Linux 通用逻辑）
-    pid = getattr(screen.handle, "pid", 0)
-    if pid:
-        kill_pid(pid)
-    else:
-        from module.platform_compat import kill_process_by_name
+    # 通过游戏门面关闭游戏进程（Windows 与 Linux 通用门面）
+    from module.game_and_screen import game_process
 
-        kill_process_by_name(cfg.game_process_name)
+    game_process.kill_game()
     sleep(10)
     wait_start = time.time()
     while True:

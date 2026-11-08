@@ -7,7 +7,7 @@ from playsound3 import playsound
 from PySide6.QtCore import QT_TRANSLATE_NOOP, QMutex, QThread
 
 from app import mediator
-from app.windows_toast import TemplateToast, send_toast
+from app.notification import TemplateToast, send_toast
 from module.automation import auto
 from module.config import TeamSetting, cfg
 from module.decorator.decorator import begin_and_finish_time_log

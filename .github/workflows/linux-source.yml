@@ -6,6 +6,7 @@ jobs:
   source:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         image: [debian:bookworm, archlinux:base]
     container: ${{ matrix.image }}
@@ -17,9 +18,9 @@ jobs:
         run: |
           if command -v apt-get; then
             apt-get update
-            apt-get install -y git curl ca-certificates libegl1 libgl1 libxkbcommon0 libdbus-1-3
+            apt-get install -y build-essential linux-libc-dev git curl ca-certificates libegl1 libgl1 libxkbcommon0 libdbus-1-3 libglib2.0-0 libfontconfig1 libzstd1
           else
-            pacman -Syu --noconfirm git curl ca-certificates libglvnd libxkbcommon dbus
+            pacman -Syu --noconfirm base-devel linux-api-headers git curl ca-certificates libglvnd libxkbcommon dbus glib2 fontconfig zstd
           fi
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v8.1.0

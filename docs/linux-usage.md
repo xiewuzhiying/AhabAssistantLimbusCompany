@@ -6,10 +6,12 @@ Install Steam, select Proton, successfully launch Limbus once and exit it. Keep 
 
 ```bash
 # Debian/Ubuntu: enable your distribution's Steam repositories as appropriate
-sudo apt install gamescope libegl1 libgl1 libxkbcommon0 libdbus-1-3
+sudo apt install build-essential linux-libc-dev gamescope libegl1 libgl1 libxkbcommon0 libdbus-1-3 libglib2.0-0 libfontconfig1 libzstd1
 # Arch: Steam requires the distribution's multilib repository
-sudo pacman -S gamescope libglvnd libxkbcommon dbus
+sudo pacman -S base-devel linux-api-headers gamescope libglvnd libxkbcommon dbus glib2 fontconfig zstd
 ```
+
+The compiler and Linux API headers are needed to build pynput's evdev dependency.
 
 From the checkout, `uv sync --frozen` installs the pinned Python environment. Start with `scripts/linux/aalc run`, or `uv run python main.py`. On NixOS the wrapper uses `nix develop` automatically. Neither path needs a hardcoded Nix store location.
 

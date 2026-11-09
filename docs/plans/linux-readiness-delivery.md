@@ -8,7 +8,7 @@ The nine readiness packages are implemented locally. The upstream baseline was r
 - `pr/linux-native`: Linux implementation, portable CI and user documentation. Fork automation and historical machine audits are excluded.
 - `linux-next`: the PR product tree plus fork synchronization policy, with publication workflows excluded. Daily automation prepares candidates for both `main` and `linux-next`, tests the Linux candidate on Windows/Linux and the upstream-only main candidate on Windows, then advances both atomically. Conflicts, test failures or concurrent branch changes leave both remote branches unchanged. It never advances the PR branch.
 
-Original audit/rebuild branches and `archive/main-before-linux-readiness` retain provenance. The final cleanup also preserves `archive/linux-readiness-before-pr-cleanup`. Historical findings and the first reconstruction map remain under `docs/audits/2026-11-08-full-branch-review/` on the archive/rebuild branches. Do not use historical findings as claims about the final version.
+Original audit/rebuild branches and `archive/main-before-linux-readiness` retain provenance. The final cleanup also preserves `archive/linux-readiness-before-pr-cleanup`. The final old-to-new mapping is in [commit provenance](linux-commit-provenance.md). Historical findings and the first reconstruction map remain under `docs/audits/2026-11-08-full-branch-review/` on the archive/rebuild branches. Do not use historical findings as claims about the final version.
 
 ## Implemented behavior
 
@@ -20,7 +20,7 @@ Input, capture and preview bind to the owned session. Linux-native-only settings
 
 ## Validation
 
-- Ordinary suite with DISPLAY/WAYLAND_DISPLAY unset: 175 passed, 1 hardware timing benchmark skipped. The subsequently added preview import regression passed in the focused suite (26 passed).
+- Ordinary suite with DISPLAY/WAYLAND_DISPLAY unset: 176 passed, 1 hardware timing benchmark skipped, including the preview import regression. Focused preview/window checks also passed (26 passed).
 - Targeted new-module typecheck: zero errors; changed new modules pass Ruff. UI construction smoke passed.
 - Real systemd stop and owner-SIGKILL descendant cleanup: 2 passed.
 - Actual game startup captured changing frames. Final preview acceptance launched, captured, closed and restarted the real game twice; both cycles displayed 960×540 frames and preview workers closed in about 0.2 seconds. No gameplay input was sent.

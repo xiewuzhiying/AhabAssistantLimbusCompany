@@ -455,29 +455,11 @@ class X11Handle(Handle):
             log.error(f"在指定的 X 显示服务 ({display_name}) 中未能获取到游戏窗口", stacklevel=3)
             return 0
 
-        # 2. 配置/环境变量显式指定的 Gamescope DISPLAY 优先于宿主默认 DISPLAY 探测
-        configured_gs = get_configured_gamescope_display()
-        if configured_gs:
-            log.debug(f"优先探测配置/环境变量指定的 Gamescope DISPLAY: {configured_gs}")
-            wid = self._try_display(configured_gs, title, class_name, is_gamescope=True)
+        from module.game_and_screen.gamescope_launcher import GamescopeLauncher
+        owned_display = GamescopeLauncher().display_name()
+        if owned_display:
+            wid = self._try_display(owned_display, title, class_name, is_gamescope=True)
             if wid:
-                log.info(f"成功连接至配置指定的 Gamescope DISPLAY={configured_gs} (wid={wid})")
-                return wid
-
-            self._is_gamescope = True
-            return 0
-
-        # 3. 自适应优先探测 Gamescope 嵌套 DISPLAY
-        gs_candidates = detect_gamescope_displays()
-        tried = {configured_gs, os.environ.get("DISPLAY")}
-        for cand in gs_candidates:
-            if cand in tried:
-                continue
-            tried.add(cand)
-            log.debug(f"尝试探测 Gamescope 候选 DISPLAY: {cand}")
-            wid = self._try_display(cand, title, class_name, is_gamescope=True)
-            if wid:
-                log.info(f"检测到 Gamescope 嵌套环境，已切换至 DISPLAY={cand} (wid={wid})")
                 return wid
 
         self._is_gamescope = True

@@ -17,6 +17,7 @@ from utils.image_utils import ImageUtils
 from utils.path_manager import path_manager
 from utils.singletonmeta import SingletonMeta
 
+from module.cancellation import checkpoint
 from ..config import cfg
 from ..logger import log
 from ..ocr import ocr
@@ -163,7 +164,14 @@ class Automation(metaclass=SingletonMeta):
 
         def wrapper(*args, **kwargs):
             while True:
-                gate_open = self._interaction_gate.wait(timeout=GATE_WAIT_TIMEOUT)
+                checkpoint()
+                deadline = time.monotonic() + GATE_WAIT_TIMEOUT
+                while not self._interaction_gate.wait(timeout=0.1):
+                    checkpoint()
+                    if time.monotonic() >= deadline:
+                        break
+                gate_open = self._interaction_gate.is_set()
+                checkpoint()
                 with self._input_lock:
                     if gate_open and self._interaction_gate.is_set():
                         method = getattr(self.input_handler, method_name)
@@ -208,6 +216,7 @@ class Automation(metaclass=SingletonMeta):
             return screenshot
 
     def check_pause(self) -> bool:
+        checkpoint()
         """
         检查是否处于暂停状态
 
@@ -361,6 +370,7 @@ class Automation(metaclass=SingletonMeta):
         return True
 
     def take_screenshot(self, gray: bool = True) -> Image | None:
+        checkpoint()
         """
         截取当前屏幕并返回图像对象。
         Args:

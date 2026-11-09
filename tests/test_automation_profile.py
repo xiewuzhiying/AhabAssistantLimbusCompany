@@ -6,7 +6,7 @@ from module.game_and_screen.automation_profile import clone_profile, set_post_pr
 
 
 def test_private_profile_changes_only_graphics_and_keeps_source(tmp_path):
-    source = tmp_path / 'steam'
+    source = tmp_path / 'steamapps/compatdata/1973530'
     (source / 'pfx').mkdir(parents=True)
     options = {'_ppOnBattle': True, '_ppBloom': True, '_ppBlur': True,
                '_ppSettingUsed': True, 'unrelated': 42}

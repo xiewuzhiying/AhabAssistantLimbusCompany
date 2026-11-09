@@ -139,6 +139,15 @@ if __name__ == "__main__":
     # 创建主窗口
     ui = MainWindow(sys.argv)
 
+    if sys.platform.startswith('linux') and not cfg.simulator and len(sys.argv) == 1:
+        from module.native_linux import check_profile, load_settings
+        try:
+            from pathlib import Path
+            check_profile(Path(load_settings()['profile']))
+        except (OSError, ValueError):
+            from app.linux_setup import LinuxSetup
+            QTimer.singleShot(0, lambda: LinuxSetup(ui).exec())
+
     # 3. 设置参数监听信号
     signaler = ArgumentSignaler()
 

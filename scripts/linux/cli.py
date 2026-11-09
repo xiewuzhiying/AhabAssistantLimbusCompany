@@ -13,8 +13,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     run = sub.add_parser('run', help='Open AALC using its private game profile')
-    run.add_argument('--graphics-api', choices=['auto', 'd3d11', 'd3d12'], default='d3d11')
+    run.add_argument('--graphics-api', choices=['auto', 'd3d11', 'd3d12'], default=None)
     run.add_argument('--profile', type=Path)
+    run.add_argument('--skip-setup', action='store_true')
+    for name in ('doctor', 'status'):
+        diagnostic = sub.add_parser(name)
+        diagnostic.add_argument('--json', action='store_true')
     preview = sub.add_parser('preview', help='Open a read-only game preview')
     preview.add_argument('--fps', type=int, default=5)
     preview.add_argument('--width', type=int, default=960)
@@ -26,11 +30,17 @@ def main() -> int:
     settings.add_argument('--profile', type=Path)
     args = parser.parse_args()
     os.chdir(ROOT)
-    profile = getattr(args, 'profile', None) or Path(os.environ.get('XDG_DATA_HOME', Path.home()/'.local/share'))/'aalc/compatdata/1973530'
+    from module.native_linux import load_settings, report
+    if args.action in ('doctor', 'status'):
+        import json
+        result = report(status_only=args.action == 'status')
+        sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
+        return 0 if result['ok'] else 1
+    profile = getattr(args, 'profile', None) or Path(load_settings()['profile'])
     profile = profile.expanduser().resolve()
     if args.action == 'preview':
-        return subprocess.call([sys.executable, str(ROOT/'scripts/linux/preview.py'),
-                                '--fps', str(args.fps), '--width', str(args.width)])
+        # Ask the owning GUI to show its own session, never scan unrelated displays.
+        os.execv(sys.executable, [sys.executable, str(ROOT/'main.py'), '--native-preview'])
     from module.game_and_screen.automation_profile import clone_profile, set_post_processing, validate_profile
     if args.action == 'create-profile':
         clone_profile(args.source, profile)
@@ -39,10 +49,17 @@ def main() -> int:
         set_post_processing(profile, args.state == 'on')
         sys.stdout.write(f'Post processing {args.state}: {profile}\n')
     else:
-        validate_profile(profile)
-        os.environ['AALC_COMPAT_DATA_PATH'] = str(profile)
-        os.environ['AALC_GRAPHICS_API'] = args.graphics_api
-        os.execv(sys.executable, [sys.executable, str(ROOT/'main.py')])
+        api = args.graphics_api or load_settings()['graphics_api']
+        if args.skip_setup or args.profile:
+            validate_profile(profile)
+            from module.game_and_screen.automation_profile import require_stopped
+            require_stopped(profile)
+        command = [sys.executable, str(ROOT/'main.py')]
+        if args.profile or args.graphics_api or args.skip_setup:
+            command += ['--native-profile', str(profile), '--native-api', api]
+            if args.skip_setup:
+                command.append('--skip-setup')
+        os.execv(sys.executable, command)
     return 0
 
 

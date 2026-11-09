@@ -1,4 +1,4 @@
-from time import sleep
+from module.cancellation import sleep
 from typing import TYPE_CHECKING, overload
 
 from module.platform_compat import IS_WINDOWS
@@ -394,7 +394,8 @@ class Screen(metaclass=SingletonMeta):
                 # 否则 Steam 会连续触发两次游戏启动。
                 if not self.game.check_game_alive():
                     log.info(f"未能获取到游戏窗口: {self.title},尝试启动游戏")
-                    self.game.start_game()
+                    if not self.game.start_game():
+                        return False
                     # 等待游戏进程出现（Steam 客户端先行启动时可能需要较久）
                     for _ in range(12):
                         if self.game.check_game_alive():

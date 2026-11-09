@@ -3,6 +3,8 @@ import json
 import os
 import re
 import subprocess
+import shutil
+import tempfile
 from pathlib import Path
 
 import psutil
@@ -34,30 +36,29 @@ def clone_profile(source: Path, destination: Path) -> None:
         raise ValueError("Source prefix and registry must be real files/directories")
     require_stopped(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.mkdir(mode=0o700)
-    # Preserve Wine symlinks; reflinks avoid duplicating cached assets where supported.
-    subprocess.run(['cp', '-a', '--reflink=auto', str(source) + '/.', str(destination)], check=True)
-    destination.chmod(0o700)
-    (destination / MARKER).write_text(json.dumps({'source': str(source)}, indent=2))
+    size = sum(p.stat().st_size for p in source.rglob('*') if p.is_file() and not p.is_symlink())
+    if shutil.disk_usage(destination.parent).free < size:
+        raise OSError('Not enough free space for a private prefix copy')
+    staging = Path(tempfile.mkdtemp(prefix='.aalc-copy-', dir=destination.parent))
+    try:
+        subprocess.run(['cp', '-a', '--reflink=auto', str(source) + '/.', str(staging)], check=True)
+        staging.chmod(0o700)
+        (staging / MARKER).write_text(json.dumps({'source': str(source)}, indent=2))
+        staging.rename(destination)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def validate_profile(prefix: Path) -> Path:
-    prefix = prefix.expanduser().resolve()
-    marker = prefix / MARKER
-    if not marker.is_file():
-        raise ValueError('Create a private AALC profile first')
-    source = Path(json.loads(marker.read_text())['source']).resolve()
-    if prefix == source or (prefix / 'pfx').is_symlink() or (prefix / 'pfx/user.reg').is_symlink():
-        raise ValueError('Private profile must not link to Steam registry or prefix')
-    if not (prefix / 'pfx/user.reg').is_file():
-        raise ValueError('Private profile registry is missing')
-    return prefix
+    from module.native_linux import check_profile
+    return check_profile(prefix)
 
 
 def set_post_processing(prefix: Path, enabled: bool) -> dict[str, bool]:
     prefix = validate_profile(prefix)
     marker = prefix / MARKER
-    source = Path(json.loads(marker.read_text())['source']).resolve()
+    source = Path(json.loads(marker.read_text())['source']).resolve() if marker.is_file() else prefix.parent / '__no_source__'
     if prefix == source or (prefix / 'pfx').resolve() == (source / 'pfx').resolve():
         raise ValueError('AALC profile must not point to Steam prefix')
     require_stopped(prefix)

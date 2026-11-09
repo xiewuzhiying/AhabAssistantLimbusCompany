@@ -1,3 +1,6 @@
+import os
+import sys
+from pathlib import Path
 import ctypes
 import shutil
 import subprocess
@@ -141,7 +144,7 @@ def apply_power_keep_awake(enable: bool) -> None:
                 else:
                     if shutil.which("systemd-inhibit"):
                         _linux_inhibit_processes[threading.get_ident()] = subprocess.Popen(  # noqa: S603
-                            ["systemd-inhibit", "--what=sleep:idle", "sleep", "infinity"],
+                            ["systemd-inhibit", "--what=sleep:idle", "--", sys.executable, str(Path(__file__).with_name("inhibit_watch.py")), str(os.getpid())],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )
@@ -157,6 +160,11 @@ def apply_power_keep_awake(enable: bool) -> None:
                     proc = _linux_inhibit_processes.pop(threading.get_ident(), None)
                     if proc is not None and proc.poll() is None:
                         proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(timeout=2)
                 log.info("已恢复系统默认息屏策略")
     except Exception:
         log.exception("设置防息屏状态失败")

@@ -98,3 +98,4 @@ target-version = "py312"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+markers = ["live: requires a real Linux graphical session"]

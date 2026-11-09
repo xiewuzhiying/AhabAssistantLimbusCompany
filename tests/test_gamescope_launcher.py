@@ -47,7 +47,8 @@ def test_gamescope_launcher_override_via_env(tmp_path):
     fake_game_exe = fake_game_dir / "LimbusCompany.exe"
     fake_game_exe.touch()
     fake_compat = tmp_path / "custom_compat"
-    fake_compat.mkdir()
+    (fake_compat/'pfx').mkdir(parents=True)
+    (fake_compat/'pfx/user.reg').write_text('registry')
     fake_proton = tmp_path / "custom_proton"
     fake_proton.touch()
     fake_slr = tmp_path / "custom_slr"
@@ -145,6 +146,8 @@ def test_failed_resolution_discards_old_paths(tmp_path, monkeypatch):
 def test_prefix_override_with_autodetected_game(tmp_path, monkeypatch):
     launcher = GamescopeLauncher()
     prefix = tmp_path / 'new-prefix'
+    (prefix/'pfx').mkdir(parents=True)
+    (prefix/'pfx/user.reg').write_text('registry')
     monkeypatch.setenv('AALC_COMPAT_DATA_PATH', str(prefix))
     assert launcher.resolve_paths()
     assert launcher.build_env()['STEAM_COMPAT_DATA_PATH'] == str(prefix)

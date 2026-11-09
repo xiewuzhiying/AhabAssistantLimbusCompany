@@ -9,6 +9,7 @@ import shlex
 import time
 from pathlib import Path
 from time import sleep
+from module.native_linux import load_settings
 from typing import Callable, Optional
 
 from module.game_and_screen.managed_session import ManagedSession
@@ -30,6 +31,7 @@ class GamescopeLauncher(metaclass=SingletonMeta):
         self._lifecycle_lock = threading.RLock()
         self._pgid: Optional[int] = None
         self._session: ManagedSession | None = None
+        self._cleanup_failed = False
         self._process: Optional[subprocess.Popen] = None
         self._log_file = None
         self._steam_root: Optional[Path] = None
@@ -47,6 +49,23 @@ class GamescopeLauncher(metaclass=SingletonMeta):
     def owned_pids(self) -> list[int]:
         return self._session.member_pids() if self._session else []
 
+    def cleanup_pending(self) -> bool:
+        return self._cleanup_failed or (self._session is not None and not self.is_running())
+
+    def display_name(self) -> str | None:
+        """Resolve only a display belonging to this launch's cgroup."""
+        import psutil
+        for pid in self.owned_pids():
+            try:
+                process = psutil.Process(pid)
+                if 'limbus' in process.name().lower():
+                    value = process.environ().get('DISPLAY')
+                    if value and value != os.environ.get('DISPLAY'):
+                        return value
+            except psutil.Error:
+                pass
+        return None
+
     def is_running(self) -> bool:
         """检查 Gamescope 子进程是否存活"""
         if self._process is None:
@@ -57,8 +76,10 @@ class GamescopeLauncher(metaclass=SingletonMeta):
         """Stop only the process group created by this launcher, even after its leader exits."""
         with self._lifecycle_lock:
             if self._session is not None:
+                self._cleanup_failed = True
                 self._session.stop()
                 self._session = None
+                self._cleanup_failed = False
             pgid = self._pgid
             if pgid is not None:
                 try:
@@ -327,14 +348,14 @@ class GamescopeLauncher(metaclass=SingletonMeta):
             log.error("未找到 Limbus Company 游戏文件 (LimbusCompany.exe)")
             return False
 
-        custom_compat = os.environ.get("AALC_COMPAT_DATA_PATH") or cfg.get_value("compat_data_path", "")
-        if custom_compat:
-            try:
-                self._compat_data = Path(custom_compat).expanduser().resolve()
-                self._compat_data.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                log.error(f"Cannot create automation compatdata: {exc}")
-                return False
+        from module.native_linux import check_profile, load_settings
+        try:
+            self._compat_data = check_profile(Path(os.environ.get("AALC_COMPAT_DATA_PATH") or load_settings()['profile']))
+            from module.game_and_screen.automation_profile import require_stopped
+            require_stopped(self._compat_data)
+        except (OSError, ValueError, RuntimeError) as exc:
+            log.error(f"PROFILE_NOT_READY: {exc}")
+            return False
 
         # 3. 解析 Proton 兼容层与 SLR 容器
         custom_proton = os.environ.get("AALC_PROTON_PATH") or cfg.get_value(
@@ -422,7 +443,7 @@ class GamescopeLauncher(metaclass=SingletonMeta):
             str(self._game_exe),
             "-nosound",
         ])
-        graphics_api = os.environ.get("AALC_GRAPHICS_API") or cfg.get_value("graphics_api", "auto")
+        graphics_api = os.environ.get("AALC_GRAPHICS_API") or load_settings()["graphics_api"]
         if graphics_api not in ("auto", "d3d11", "d3d12"):
             raise ValueError(f"Unsupported graphics API: {graphics_api}")
         if graphics_api != "auto":

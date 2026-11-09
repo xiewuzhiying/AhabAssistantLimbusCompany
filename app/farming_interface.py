@@ -628,6 +628,13 @@ class FarmingInterfaceLeft(QWidget):
     def start_and_stop_tasks(self):
         # 设置按下启动与停止按钮时，其他模块的启用与停用
         current_text = self.link_start_button.get_text()
+        if current_text == "Link Start!" and not IS_WINDOWS:
+            from module.game_and_screen.gamescope_launcher import GamescopeLauncher
+            if GamescopeLauncher().cleanup_pending():
+                log.warning("CLEANUP_PENDING: 等待游戏清理完成后重试")
+                return
+        if current_text == "Link Start!" and self.my_script and self.my_script.isRunning():
+            return  # Cancellation/cleanup must finish before another task can start.
         if current_text == "Link Start!":
             # 启动前检查设置，防呆
             if self.check_setting() is False:
@@ -762,16 +769,6 @@ class FarmingInterfaceLeft(QWidget):
         if self.my_script and self.my_script.isRunning():
             log.debug("正在终止脚本线程...")
             self.my_script.terminate()  # 终止线程
-        if not IS_WINDOWS:
-            import threading
-
-            from module.game_and_screen import game_process
-
-            threading.Thread(
-                target=game_process.kill_game,
-                name="StopGameCleaner",
-                daemon=True,
-            ).start()
 
     def my_stop_shortcut(self):
         current_text = self.link_start_button.get_text()

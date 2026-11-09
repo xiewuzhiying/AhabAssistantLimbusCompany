@@ -20,6 +20,7 @@ def test_threads_release_only_their_own_inhibitor():
         return process
 
     namespace = dict(IS_WINDOWS=False, IS_LINUX=True,
+                     sys=__import__("sys"), os=__import__("os"), Path=Path, __file__="module/system_actions.py",
                      threading=SimpleNamespace(get_ident=identity),
                      _power_keep_awake_lock=threading.Lock(),
                      _power_keep_awake_depths={}, _linux_inhibit_processes={},

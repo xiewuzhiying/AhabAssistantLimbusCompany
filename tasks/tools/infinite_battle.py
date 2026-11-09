@@ -1,3 +1,4 @@
+from module.platform_compat import IS_WINDOWS
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -44,8 +45,15 @@ class BattleWorker(QThread):
     def stop(self):
         """停止工作线程"""
         self.battle.running = False
+        self.requestInterruption()
         if self.background_click is False:
             cfg.set_value("background_click", False)
+
+    def terminate(self):
+        if not IS_WINDOWS and not cfg.simulator:
+            self.stop()
+        else:
+            super().terminate()
 
     def run(self):
         """工作线程的主循环"""

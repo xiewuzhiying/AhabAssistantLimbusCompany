@@ -8,6 +8,7 @@ utils.schedule_helper: 计划任务的帮助类的实现
 import datetime
 import getpass
 import os
+import shlex
 import re
 import subprocess
 import sys
@@ -74,8 +75,8 @@ class ScheduleHelper:
 def _app_command_args(cmd_line: str) -> list[str]:
     """构造启动命令：冻结可执行文件直接带参数；源码运行时补上 main.py"""
     if getattr(sys, "frozen", False):
-        return [sys.executable, *cmd_line.split()]
-    return [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"), *cmd_line.split()]
+        return [sys.executable, *shlex.split(cmd_line)]
+    return [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"), *shlex.split(cmd_line)]
 
 
 def _app_working_dir() -> str:
@@ -116,7 +117,7 @@ class ScheduleHelper_Linux:
         timer_path = os.path.join(_SYSTEMD_USER_DIR, timer_name)
 
         exec_args = _app_command_args(cmd_line)
-        exec_str = " ".join(exec_args)
+        exec_str = " ".join('"' + arg.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"' for arg in exec_args)
 
         service_content = "\n".join(
             [
@@ -166,7 +167,7 @@ class ScheduleHelper_Linux:
     def register_onstart_task(self, task_name: str, cmd_line: str):
         os.makedirs(_AUTOSTART_DIR, exist_ok=True)
         desktop_path = os.path.join(_AUTOSTART_DIR, f"{_unit_suffix(task_name)}.desktop")
-        exec_str = " ".join(_app_command_args(cmd_line))
+        exec_str = " ".join('"' + arg.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"' for arg in _app_command_args(cmd_line))
         content = "\n".join(
             [
                 "[Desktop Entry]",

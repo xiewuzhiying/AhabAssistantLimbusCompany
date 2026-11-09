@@ -341,6 +341,23 @@ class MainWindow(FramelessWindow):
             )
             return
 
+        if sys.platform.startswith('linux') and '--native-profile' in argv:
+            try:
+                from app.linux_setup import apply_selection
+                profile = argv[argv.index('--native-profile') + 1]
+                api = argv[argv.index('--native-api') + 1]
+                if self._has_running_script():
+                    raise RuntimeError('SESSION_BUSY: 任务运行中不能切换配置')
+                apply_selection(profile, api, None if '--skip-setup' in argv else self)
+            except (ValueError, IndexError, RuntimeError, OSError) as exc:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, 'Linux 配置请求失败', str(exc))
+            return
+        if sys.platform.startswith('linux') and '--native-preview' in argv:
+            from app.linux_setup import Preview
+            self._native_preview = Preview(self)
+            self._native_preview.show()
+            return
         skip_arg_times = 0
         start_flag = False
         exit_flag = False
@@ -497,7 +514,8 @@ class MainWindow(FramelessWindow):
         cfg.set_value("window_position_y", self.y())
 
         if (
-            self.farming_interface.interface_left.my_script is not None
+            not getattr(self, "_native_close_requested", False)
+            and self.farming_interface.interface_left.my_script is not None
             and self.farming_interface.interface_left.my_script.isRunning()
         ):
             # 确保窗口可见，以便正确显示确认对话框
@@ -512,6 +530,7 @@ class MainWindow(FramelessWindow):
                 self.window(),
             )
             if message_box.exec():
+                self._native_close_requested = True
                 self.farming_interface.interface_left.my_script.terminate()
             else:
                 e.ignore()
@@ -536,6 +555,12 @@ class MainWindow(FramelessWindow):
         from module.platform_compat import IS_WINDOWS
 
         if not IS_WINDOWS:
+            worker = self.farming_interface.interface_left.my_script
+            if worker is not None and worker.isRunning():
+                worker.terminate()
+                e.ignore()
+                QTimer.singleShot(250, self.close)
+                return
             try:
                 from module.game_and_screen import game_process
 

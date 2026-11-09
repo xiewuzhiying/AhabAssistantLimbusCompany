@@ -1,3 +1,4 @@
+from module.platform_compat import IS_WINDOWS
 from datetime import datetime, timedelta
 from time import monotonic
 
@@ -46,6 +47,13 @@ class ProductionWork(QThread):
     def stop(self):
         """停止工作线程"""
         self.production_running = False
+        self.requestInterruption()
+
+    def terminate(self):
+        if not IS_WINDOWS and not cfg.simulator:
+            self.stop()
+        else:
+            super().terminate()
 
     def run(self):
         """工作线程的主循环"""

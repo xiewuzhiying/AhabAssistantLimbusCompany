@@ -59,6 +59,10 @@ class SettingInterface(QWidget):
         self.__init_card()
         self.__initLayout()
         self.__init_nav()
+        from module.platform_compat import IS_LINUX
+        if IS_LINUX:
+            from app.linux_setup import LinuxControls
+            self.expand_layout.addWidget(LinuxControls(self))
 
         # 再应用主题样式并注册主题切换监听。
         self._apply_theme_style()

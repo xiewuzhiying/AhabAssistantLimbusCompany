@@ -1,7 +1,8 @@
 import random
 from datetime import datetime
 from threading import Event
-from time import sleep, time
+from time import time
+from module.cancellation import sleep
 
 from playsound3 import playsound
 from PySide6.QtCore import QT_TRANSLATE_NOOP, QMutex, QThread
@@ -173,8 +174,8 @@ def init_game():
             # Linux/Proton 的启动链可能在数秒后才出现进程；由
             # screen.init_handle() 统一负责首次启动，避免这里先启动一次、
             # init_handle() 再因暂时看不到进程而重复拉起 Steam。
-            while not screen.init_handle():
-                sleep(10)
+            if not screen.init_handle():
+                raise withOutGameWinError("WINDOW_NOT_READY: 启动失败，请检查 Linux 环境诊断后重试")
             if cfg.set_windows:
                 screen.set_win()
             return
@@ -491,13 +492,20 @@ class my_script_task(QThread):
             log.exception("脚本线程执行失败")
         finally:
             retry_monitor.stop()
-            self.mutex.unlock()
+            try:
+                if IS_LINUX and not cfg.simulator:
+                    game_process.kill_game()
+            finally:
+                self.mutex.unlock()
 
     def terminate(self):
         retry_monitor.stop()
-        super().terminate()
-        # TerminateThread 不会释放被杀线程持有的 RLock,换新锁防止后续任务取锁永久阻塞
-        auto.reset_safety_locks()
+        if IS_LINUX and not cfg.simulator:
+            self.requestInterruption()
+            auto.resume_interactions()
+        else:
+            super().terminate()
+            auto.reset_safety_locks()
 
     """def stop(self):
         self.running=False

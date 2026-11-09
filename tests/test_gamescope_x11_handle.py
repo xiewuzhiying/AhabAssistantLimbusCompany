@@ -15,6 +15,13 @@ from module.game_and_screen.x11_handle import (
 )
 
 
+@pytest.fixture(autouse=True)
+def owned_display(monkeypatch):
+    from module.game_and_screen.gamescope_launcher import GamescopeLauncher
+    from module.game_and_screen import x11_handle
+    monkeypatch.setattr(GamescopeLauncher, 'display_name', lambda self: x11_handle.get_configured_gamescope_display() or next(iter(x11_handle.detect_gamescope_displays()), None))
+
+
 @pytest.mark.parametrize("cached_window", [0, 99])
 def test_same_display_recovers_after_xwayland_restarts(monkeypatch, cached_window):
     handle = object.__new__(X11Handle)

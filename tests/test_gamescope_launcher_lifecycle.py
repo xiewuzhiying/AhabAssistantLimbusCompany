@@ -67,7 +67,7 @@ def test_system_action_exit_game_delegates_to_game_process():
         mock_kill_game.assert_called_once()
 
 
-def test_farming_interface_stop_script_delegates_to_game_process():
+def test_farming_stop_requests_worker_cleanup_without_parallel_kill():
     """验证在 Linux 下 farming_interface.stop_script 委托给 game_process.kill_game"""
     with (
         patch("app.farming_interface.IS_WINDOWS", False),
@@ -84,7 +84,7 @@ def test_farming_interface_stop_script_delegates_to_game_process():
         FarmingInterfaceLeft.stop_script(instance)
 
         instance.my_script.terminate.assert_called_once()
-        mock_kill_game.assert_called_once()
+        mock_kill_game.assert_not_called()
 
 
 def test_my_app_close_event_delegates_to_game_process():

@@ -22,7 +22,7 @@ def test_configured_display_failure_never_probes_host():
     handle = object.__new__(x11_handle.X11Handle)
     handle._is_gamescope = False
     handle._enum_windows_list = []
-    with patch.object(x11_handle, 'get_configured_gamescope_display', return_value=':87'), patch.object(handle, '_try_display', return_value=0) as probe:
+    with patch('module.game_and_screen.gamescope_launcher.GamescopeLauncher.display_name', return_value=':87'), patch.object(handle, '_try_display', return_value=0) as probe:
         assert handle.init_handle() == 0
         assert [call.args[0] for call in probe.call_args_list] == [':87']
         assert handle.is_gamescope

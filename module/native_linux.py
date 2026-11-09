@@ -82,15 +82,15 @@ def report(status_only: bool = False) -> dict[str, Any]:
         add('PROFILE_NOT_READY', False, 'OPEN_SETUP', 'profile')
     if not status_only:
         import re
-        steam = Path.home()/'.local/share/Steam'
+        steam = Path(os.environ.get('AALC_STEAM_ROOT', Path.home()/'.local/share/Steam'))
         libraries = [steam, Path.home()/'.steam/steam']
         vdf = steam/'steamapps/libraryfolders.vdf'
         if vdf.is_file():
             libraries += [Path(value) for value in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text(errors='replace'))]
-        game = any((lib/'steamapps/common/Limbus Company/LimbusCompany.exe').is_file() for lib in libraries)
-        proton = any(list((lib/'steamapps/common').glob('Proton*/proton')) for lib in libraries)
+        game = bool(os.environ.get('AALC_GAME_PATH') and Path(os.environ['AALC_GAME_PATH']).is_file()) or any((lib/'steamapps/common/Limbus Company/LimbusCompany.exe').is_file() for lib in libraries)
+        proton = bool(os.environ.get('AALC_PROTON_PATH') and Path(os.environ['AALC_PROTON_PATH']).is_file()) or any(list((lib/'steamapps/common').glob('Proton*/proton')) for lib in libraries)
         proton = proton or any(list((lib/'compatibilitytools.d').glob('*/proton')) for lib in libraries)
-        runtime = any(list((lib/'steamapps/common').glob('SteamLinuxRuntime*/_v2-entry-point')) for lib in libraries)
+        runtime = bool(os.environ.get('AALC_SLR_ENTRYPOINT') and Path(os.environ['AALC_SLR_ENTRYPOINT']).is_file()) or any(list((lib/'steamapps/common').glob('SteamLinuxRuntime*/_v2-entry-point')) for lib in libraries)
         add('GAME_NOT_FOUND', game, 'SELECT_GAME_PATH', 'runtime')
         add('PROTON_NOT_FOUND', proton, 'INSTALL_OR_SELECT_PROTON', 'runtime')
         add('RUNTIME_NOT_FOUND', runtime or shutil.which('steam-run'), 'INSTALL_STEAM_RUNTIME', 'runtime')
@@ -102,5 +102,5 @@ def report(status_only: bool = False) -> dict[str, Any]:
     except (OSError, subprocess.TimeoutExpired):
         add('SESSION_QUERY_FAILED', False, 'CHECK_USER_MANAGER', 'session')
     return {'schema_version': 1, 'ok': all(c['ok'] for c in checks),
-            'state': 'running' if units else 'idle', 'checks': checks,
+            'state': ('unknown' if any(c['code'] == 'SESSION_QUERY_FAILED' and not c['ok'] for c in checks) else ('running' if units else 'idle')), 'checks': checks,
             'sessions': units, 'log': 'logs/gamescope.log'}

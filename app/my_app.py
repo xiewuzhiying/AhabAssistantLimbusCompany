@@ -351,7 +351,10 @@ class MainWindow(FramelessWindow):
                 apply_selection(profile, api, None if '--skip-setup' in argv else self)
             except (ValueError, IndexError, RuntimeError, OSError) as exc:
                 from PySide6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, 'Linux 配置请求失败', str(exc))
+                if '--skip-setup' in argv:
+                    log.error(str(exc))
+                else:
+                    QMessageBox.warning(self, 'Linux 配置请求失败', str(exc))
             return
         if sys.platform.startswith('linux') and '--native-preview' in argv:
             from app.linux_setup import Preview
@@ -509,6 +512,16 @@ class MainWindow(FramelessWindow):
             self.resource_sync_coordinator.apply_status_style(is_dark)
 
     def closeEvent(self, e):
+        if sys.platform.startswith('linux'):
+            from app.linux_setup import FrameReader, ProfileCopy
+            background = [*self.findChildren(FrameReader), *self.findChildren(ProfileCopy)]
+            active = [thread for thread in background if thread.isRunning()]
+            if active:
+                for thread in active:
+                    thread.requestInterruption()
+                e.ignore()
+                QTimer.singleShot(250, self.close)
+                return
         # 保存窗口位置
         cfg.set_value("window_position_x", self.x())
         cfg.set_value("window_position_y", self.y())

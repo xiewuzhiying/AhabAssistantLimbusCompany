@@ -212,7 +212,8 @@ class InfiniteBattles(QWidget):
             if self.worker.isRunning():
                 self.worker.terminate()
                 self.worker.wait(1000)
-                auto.reset_safety_locks()
+                if IS_WINDOWS or cfg.simulator:
+                    auto.reset_safety_locks()
             self.defense_box.setDisabled(False)
             self.defense_on_turn1_box.setDisabled(False)
             self.not_choose_event_box.setDisabled(False)
@@ -244,6 +245,12 @@ class InfiniteBattles(QWidget):
         log.error(f"战斗错误: {error_msg}")
 
     def closeEvent(self, event):
+        if not IS_WINDOWS and not cfg.simulator and self.worker is not None and self.worker.isRunning():
+            self.worker.finished.connect(self.close)
+            self.worker.stop()
+            self.hide()
+            event.ignore()
+            return
         """窗口关闭时停止所有定时器和工作线程"""
         # 停止工作线程
         if hasattr(self, "worker") and self.worker:
@@ -251,7 +258,8 @@ class InfiniteBattles(QWidget):
             self.worker.wait(3000)  # 等待最多3秒
             if self.worker.isRunning():
                 self.worker.terminate()
-                auto.reset_safety_locks()
+                if IS_WINDOWS or cfg.simulator:
+                    auto.reset_safety_locks()
 
         # 资源清理
         try:

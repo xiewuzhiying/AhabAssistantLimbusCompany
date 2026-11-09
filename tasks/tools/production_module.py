@@ -327,6 +327,12 @@ class ProductionModule(QWidget):
         log.info(f"生产等待: 下一次体力回复时间: {next_time} s，下一次执行模块生产等待时间: {waiting_time} s")
 
     def closeEvent(self, event):
+        if not IS_WINDOWS and not cfg.simulator and self.worker is not None and self.worker.isRunning():
+            self.worker.finished.connect(self.close)
+            self.worker.stop()
+            self.hide()
+            event.ignore()
+            return
         """窗口关闭时停止所有定时器和工作线程"""
         # 停止工作线程
         if hasattr(self, "worker") and self.worker:

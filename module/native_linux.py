@@ -25,6 +25,8 @@ def load_settings() -> dict[str, str]:
     if not path.exists():
         return {'profile': str(default_profile()), 'graphics_api': 'd3d11'}
     data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError('Invalid native Linux settings object')
     if data.get('graphics_api') not in ('auto', 'd3d11', 'd3d12') or not isinstance(data.get('profile'), str):
         raise ValueError('Invalid native Linux settings')
     return {'profile': data['profile'], 'graphics_api': data['graphics_api']}
@@ -78,17 +80,20 @@ def report(status_only: bool = False) -> dict[str, Any]:
         add('PROFILE_NOT_READY', True, 'OPEN_SETUP', 'profile')
     except (OSError, ValueError, KeyError):
         add('PROFILE_NOT_READY', False, 'OPEN_SETUP', 'profile')
-    if not status_only and checks[-1]['ok']:
-        # Import resolution only after the lightweight checks; capture incidental library stdout.
-        try:
-            import contextlib
-            import io
-            with contextlib.redirect_stdout(io.StringIO()):
-                from module.game_and_screen.gamescope_launcher import GamescopeLauncher
-                resolved = GamescopeLauncher().resolve_paths()
-            add('GAME_RUNTIME_NOT_READY', resolved, 'SELECT_GAME_AND_PROTON', 'runtime')
-        except Exception:
-            add('GAME_RUNTIME_NOT_READY', False, 'SELECT_GAME_AND_PROTON', 'runtime')
+    if not status_only:
+        import re
+        steam = Path.home()/'.local/share/Steam'
+        libraries = [steam, Path.home()/'.steam/steam']
+        vdf = steam/'steamapps/libraryfolders.vdf'
+        if vdf.is_file():
+            libraries += [Path(value) for value in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text(errors='replace'))]
+        game = any((lib/'steamapps/common/Limbus Company/LimbusCompany.exe').is_file() for lib in libraries)
+        proton = any(list((lib/'steamapps/common').glob('Proton*/proton')) for lib in libraries)
+        proton = proton or any(list((lib/'compatibilitytools.d').glob('*/proton')) for lib in libraries)
+        runtime = any(list((lib/'steamapps/common').glob('SteamLinuxRuntime*/_v2-entry-point')) for lib in libraries)
+        add('GAME_NOT_FOUND', game, 'SELECT_GAME_PATH', 'runtime')
+        add('PROTON_NOT_FOUND', proton, 'INSTALL_OR_SELECT_PROTON', 'runtime')
+        add('RUNTIME_NOT_FOUND', runtime or shutil.which('steam-run'), 'INSTALL_STEAM_RUNTIME', 'runtime')
     units = []
     try:
         result = subprocess.run(['systemctl', '--user', 'list-units', 'aalc-game-*.service', '--no-legend', '--plain'], capture_output=True, text=True, timeout=3)

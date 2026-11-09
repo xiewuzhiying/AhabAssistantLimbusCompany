@@ -58,6 +58,10 @@ class GamescopeLauncher(metaclass=SingletonMeta):
         for pid in self.owned_pids():
             try:
                 process = psutil.Process(pid)
+                if process.name().lower() == 'xwayland':
+                    for argument in process.cmdline()[1:]:
+                        if re.fullmatch(r':\d+', argument) and argument != os.environ.get('DISPLAY'):
+                            return argument
                 if 'limbus' in process.name().lower():
                     value = process.environ().get('DISPLAY')
                     if value and value != os.environ.get('DISPLAY'):
@@ -566,6 +570,10 @@ class GamescopeLauncher(metaclass=SingletonMeta):
 
     def _launch_locked(self) -> bool:
         """执行 Gamescope 模式启动"""
+        if self._cleanup_failed:
+            self.terminate()
+            if self._cleanup_failed:
+                return False
         if self.is_running():
             log.info("Gamescope 实例已在运行中")
             return True

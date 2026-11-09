@@ -2,9 +2,10 @@
 import json
 import os
 import re
-import subprocess
 import shutil
+import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import psutil
@@ -26,7 +27,12 @@ def require_stopped(prefix: Path) -> None:
             continue
 
 
-def clone_profile(source: Path, destination: Path) -> None:
+def clone_profile(source: Path, destination: Path, cancelled: Callable[[], bool] = lambda: False) -> None:
+    def checkpoint():
+        if cancelled():
+            raise RuntimeError("Profile copy cancelled; retry when ready")
+
+    checkpoint()
     source, destination = source.expanduser().resolve(), destination.expanduser().resolve()
     if destination.exists() or destination.is_relative_to(source) or source.is_relative_to(destination):
         raise ValueError('Choose a new profile directory outside the Steam prefix')
@@ -36,12 +42,35 @@ def clone_profile(source: Path, destination: Path) -> None:
         raise ValueError("Source prefix and registry must be real files/directories")
     require_stopped(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    size = sum(p.stat().st_size for p in source.rglob('*') if p.is_file() and not p.is_symlink())
+    size = 0
+    for item in source.rglob('*'):
+        checkpoint()
+        if item.is_file() and not item.is_symlink():
+            size += item.stat().st_size
     if shutil.disk_usage(destination.parent).free < size:
         raise OSError('Not enough free space for a private prefix copy')
     staging = Path(tempfile.mkdtemp(prefix='.aalc-copy-', dir=destination.parent))
     try:
-        subprocess.run(['cp', '-a', '--reflink=auto', str(source) + '/.', str(staging)], check=True)
+        with subprocess.Popen(['cp', '-a', '--reflink=auto', str(source) + '/.', str(staging)]) as process:
+            try:
+                while True:
+                    checkpoint()
+                    try:
+                        result = process.wait(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                if result:
+                    raise subprocess.CalledProcessError(result, process.args)
+                checkpoint()
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)
         staging.chmod(0o700)
         (staging / MARKER).write_text(json.dumps({'source': str(source)}, indent=2))
         staging.rename(destination)

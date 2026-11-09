@@ -32,7 +32,7 @@ class ProfileCopy(QThread):
     def run(self):
         try:
             from module.game_and_screen.automation_profile import clone_profile
-            clone_profile(Path(self.source), Path(self.destination))
+            clone_profile(Path(self.source), Path(self.destination), self.isInterruptionRequested)
             self.result.emit('')
         except Exception as exc:
             self.result.emit(str(exc))
@@ -123,6 +123,7 @@ class LinuxSetup(QDialog):
         copy.clicked.connect(lambda: QApplication.clipboard().setText(self.details.toPlainText()))
         layout.addWidget(copy)
         self.copy_worker = None
+        self._closing = False
         self.diagnose()
 
     def diagnose(self):
@@ -142,6 +143,7 @@ class LinuxSetup(QDialog):
         self.details.setPlainText('正在复制，可能需要数分钟；失败后可直接重试。')
         self.copy_worker = ProfileCopy(source, self.profile.text(), self)
         self.copy_worker.result.connect(self.copied)
+        self.copy_worker.finished.connect(self.finish_close)
         self.copy_worker.start()
 
     def copied(self, error):
@@ -154,8 +156,15 @@ class LinuxSetup(QDialog):
         except (ValueError, OSError, RuntimeError) as exc:
             QMessageBox.warning(self, '配置未保存', str(exc))
 
+    def finish_close(self):
+        if getattr(self, '_closing', False):
+            self.close()
+
     def closeEvent(self, event):
         if self.copy_worker and self.copy_worker.isRunning():
+            self._closing = True
+            self.copy_worker.requestInterruption()
+            self.details.setPlainText("正在取消复制并清理临时文件…")
             event.ignore()
             return
         super().closeEvent(event)

@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -57,6 +58,61 @@ def check_profile(prefix: Path) -> Path:
     return prefix
 
 
+
+def runtime_availability() -> dict[str, bool]:
+    """Read overrides without importing Config, which creates/updates user files."""
+    from ruamel.yaml import YAML
+
+    config_path = Path('config.yaml')
+    config = YAML(typ='safe').load(config_path) if config_path.is_file() else {}
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise ValueError('Invalid application configuration object')
+
+    def override(environment, key):
+        value = os.environ.get(environment) or config.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f'Invalid path setting: {key}')
+        return Path(value).expanduser() if value else None
+
+    steam = override('AALC_STEAM_ROOT', 'steam_root')
+    candidates = [Path.home()/'.local/share/Steam', Path.home()/'.steam/root', Path.home()/'.steam/steam']
+    if os.environ.get('STEAM_COMPAT_CLIENT_INSTALL_PATH'):
+        candidates.insert(0, Path(os.environ['STEAM_COMPAT_CLIENT_INSTALL_PATH']))
+    if steam is None or not steam.is_dir():
+        steam = next((p for p in candidates if (p/'steamapps').is_dir()), None)
+    libraries = [steam] if steam else []
+    if steam and (steam/'steamapps/libraryfolders.vdf').is_file():
+        libraries += [Path(value) for value in re.findall(r'"path"\s+"([^"]+)"', (steam/'steamapps/libraryfolders.vdf').read_text(errors='replace'))]
+
+    game = override('AALC_GAME_PATH', 'custom_game_path')
+    if os.environ.get('AALC_GAME_DIR') and not os.environ.get('AALC_GAME_PATH'):
+        game = Path(os.environ['AALC_GAME_DIR'])
+    if game is None:
+        game = override('AALC_GAME_PATH', 'game_path')
+    games = [game, game/'LimbusCompany.exe'] if game else []
+    for library in libraries:
+        manifest = library/'steamapps/appmanifest_1973530.acf'
+        name = 'Limbus Company'
+        if manifest.is_file():
+            match = re.search(r'"installdir"\s+"([^"]+)"', manifest.read_text(errors='replace'))
+            if match:
+                name = match[1]
+        games.append(library/'steamapps/common'/name/'LimbusCompany.exe')
+
+    proton = override('AALC_PROTON_PATH', 'proton_path')
+    protons = [proton, proton/'proton'] if proton else []
+    runtime = override('AALC_SLR_ENTRYPOINT', 'slr_entrypoint')
+    runtimes = [runtime] if runtime else []
+    for library in libraries:
+        protons += list((library/'steamapps/common').glob('Proton*/proton'))
+        protons += list((library/'compatibilitytools.d').glob('*/proton'))
+        runtimes += list((library/'steamapps/common').glob('SteamLinuxRuntime*/_v2-entry-point'))
+    return {'GAME_NOT_FOUND': any(p.is_file() for p in games),
+            'PROTON_NOT_FOUND': any(p.is_file() for p in protons),
+            'RUNTIME_NOT_FOUND': any(p.is_file() for p in runtimes) or bool(shutil.which('steam-run'))}
+
 def report(status_only: bool = False) -> dict[str, Any]:
     checks = []
     def add(code, ok, action, phase='environment'):
@@ -81,19 +137,16 @@ def report(status_only: bool = False) -> dict[str, Any]:
     except (OSError, ValueError, KeyError):
         add('PROFILE_NOT_READY', False, 'OPEN_SETUP', 'profile')
     if not status_only:
-        import re
-        steam = Path(os.environ.get('AALC_STEAM_ROOT', Path.home()/'.local/share/Steam'))
-        libraries = [steam, Path.home()/'.steam/steam']
-        vdf = steam/'steamapps/libraryfolders.vdf'
-        if vdf.is_file():
-            libraries += [Path(value) for value in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text(errors='replace'))]
-        game = bool(os.environ.get('AALC_GAME_PATH') and Path(os.environ['AALC_GAME_PATH']).is_file()) or any((lib/'steamapps/common/Limbus Company/LimbusCompany.exe').is_file() for lib in libraries)
-        proton = bool(os.environ.get('AALC_PROTON_PATH') and Path(os.environ['AALC_PROTON_PATH']).is_file()) or any(list((lib/'steamapps/common').glob('Proton*/proton')) for lib in libraries)
-        proton = proton or any(list((lib/'compatibilitytools.d').glob('*/proton')) for lib in libraries)
-        runtime = bool(os.environ.get('AALC_SLR_ENTRYPOINT') and Path(os.environ['AALC_SLR_ENTRYPOINT']).is_file()) or any(list((lib/'steamapps/common').glob('SteamLinuxRuntime*/_v2-entry-point')) for lib in libraries)
-        add('GAME_NOT_FOUND', game, 'SELECT_GAME_PATH', 'runtime')
-        add('PROTON_NOT_FOUND', proton, 'INSTALL_OR_SELECT_PROTON', 'runtime')
-        add('RUNTIME_NOT_FOUND', runtime or shutil.which('steam-run'), 'INSTALL_STEAM_RUNTIME', 'runtime')
+        from ruamel.yaml import YAMLError
+        try:
+            available = runtime_availability()
+            add('CONFIG_INVALID', True, 'FIX_APPLICATION_CONFIG')
+            for code, action in [('GAME_NOT_FOUND', 'SELECT_GAME_PATH'),
+                                 ('PROTON_NOT_FOUND', 'INSTALL_OR_SELECT_PROTON'),
+                                 ('RUNTIME_NOT_FOUND', 'INSTALL_STEAM_RUNTIME')]:
+                add(code, available[code], action, 'runtime')
+        except (OSError, ValueError, YAMLError):
+            add('CONFIG_INVALID', False, 'FIX_APPLICATION_CONFIG')
     units = []
     try:
         result = subprocess.run(['systemctl', '--user', 'list-units', 'aalc-game-*.service', '--no-legend', '--plain'], capture_output=True, text=True, timeout=3)

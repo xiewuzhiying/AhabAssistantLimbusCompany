@@ -47,7 +47,7 @@ def test_linux_blank_click_is_skipped_without_window(monkeypatch) -> None:
     handler = object.__new__(linux_input.LinuxInput)
     handler.wait_pause = lambda: None
     click = Mock()
-    monkeypatch.setattr(linux_input.pyautogui, "click", click)
+    monkeypatch.setattr(linux_input, "_pyautogui", lambda: SimpleNamespace(click=click))
 
     assert handler.mouse_click_blank() is False
     click.assert_not_called()

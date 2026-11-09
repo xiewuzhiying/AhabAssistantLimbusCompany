@@ -12,7 +12,6 @@ import random
 import time
 from typing import overload
 
-import pyautogui
 import pyperclip
 from Xlib import X
 from Xlib import display as xdisplay
@@ -27,7 +26,13 @@ from . import AbstractInput
 from .gamescope_input import GamescopeXTestInput
 from .scroll_swipe import build_windows_scroll_swipe_plan
 
-pyautogui.FAILSAFE = False
+
+def _pyautogui():
+    """Connect to the host display only when foreground input is requested."""
+    import pyautogui
+
+    pyautogui.FAILSAFE = False
+    return pyautogui
 
 
 def _use_pyautogui_mouse() -> bool:
@@ -169,7 +174,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
             return driver.get_mouse_position()
         try:
             if _use_pyautogui_mouse():
-                pos = pyautogui.position()
+                pos = _pyautogui().position()
                 return int(pos.x), int(pos.y)
             return _query_pointer()
         except Exception:
@@ -191,7 +196,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
         x, y = self.pos_offset(x, y)
         for _ in range(times):
             if _use_pyautogui_mouse():
-                pyautogui.click(x, y)
+                _pyautogui().click(x, y)
             else:
                 if not _abs_move(x, y):
                     log.debug(f"Linux 鼠标无法移动到目标位置 ({x}, {y})，跳过点击")
@@ -217,10 +222,10 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
         scale = cfg.set_win_size / 1080
         x, y = self.pos_offset(x, y)
         if _use_pyautogui_mouse():
-            pyautogui.moveTo(x, y)
-            pyautogui.mouseDown()
-            pyautogui.moveTo(x, y + int(300 * scale * reverse), duration=0.4)
-            pyautogui.mouseUp()
+            _pyautogui().moveTo(x, y)
+            _pyautogui().mouseDown()
+            _pyautogui().moveTo(x, y + int(300 * scale * reverse), duration=0.4)
+            _pyautogui().mouseUp()
         else:
             _warp(x, y)
             time.sleep(0.1)
@@ -246,14 +251,14 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
         current_mouse_position = self.get_mouse_position() if move_back else None
         x, y = self.pos_offset(x, y)
         if _use_pyautogui_mouse():
-            pyautogui.moveTo(x, y)
-            pyautogui.mouseDown()
-            pyautogui.moveTo(x + dx, y + dy, duration=drag_time)
+            _pyautogui().moveTo(x, y)
+            _pyautogui().mouseDown()
+            _pyautogui().moveTo(x + dx, y + dy, duration=drag_time)
             if drag_time * 0.3 > 0.5:
                 time.sleep(drag_time * 0.3)
             else:
                 time.sleep(0.5)
-            pyautogui.mouseUp()
+            _pyautogui().mouseUp()
         else:
             _abs_move(x, y)
             time.sleep(0.1)
@@ -285,13 +290,13 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
             for point, move_duration in raw_plan
         ]
         if _use_pyautogui_mouse():
-            pyautogui.moveTo(*plan[0][0])
-            pyautogui.mouseDown()
+            _pyautogui().moveTo(*plan[0][0])
+            _pyautogui().mouseDown()
             for point, move_duration in plan[1:]:
-                pyautogui.moveTo(*point, duration=move_duration)
+                _pyautogui().moveTo(*point, duration=move_duration)
             if settle_duration:
                 time.sleep(settle_duration)
-            pyautogui.mouseUp()
+            _pyautogui().mouseUp()
         else:
             _abs_move(*plan[0][0])
             time.sleep(0.1)
@@ -317,7 +322,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
             msg = "鼠标滚动滚轮，拉近界面"
         log.debug(msg, stacklevel=2)
         if _use_pyautogui_mouse():
-            pyautogui.scroll(direction)
+            _pyautogui().scroll(direction)
         else:
             button = 4 if direction > 0 else 5
             for _ in range(abs(direction) or 1):
@@ -343,7 +348,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
         x, y = self.pos_offset(x, y)
         for _ in range(times):
             if _use_pyautogui_mouse():
-                pyautogui.click(x, y)
+                _pyautogui().click(x, y)
             else:
                 if not _abs_move(x, y):
                     log.debug(f"Linux 鼠标无法移动到空白位置 ({x}, {y})，跳过点击")
@@ -369,7 +374,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
         log.debug(msg, stacklevel=2)
         x, y = self.pos_offset(*coordinate)
         if _use_pyautogui_mouse():
-            pyautogui.moveTo(x, y)
+            _pyautogui().moveTo(x, y)
         else:
             _abs_move(x, y)
 
@@ -389,7 +394,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
             return
 
         if _use_pyautogui_mouse():
-            pyautogui.moveTo(int(coordinate[0]), int(coordinate[1]))
+            _pyautogui().moveTo(int(coordinate[0]), int(coordinate[1]))
         else:
             _abs_move(int(coordinate[0]), int(coordinate[1]))
         self.wait_pause()
@@ -407,12 +412,12 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
 
         x, y = self.pos_offset(position[0][0], position[0][1])
         if _use_pyautogui_mouse():
-            pyautogui.moveTo(x, y)
-            pyautogui.mouseDown()
+            _pyautogui().moveTo(x, y)
+            _pyautogui().mouseDown()
             for pos in position:
                 x, y = self.pos_offset(pos[0], pos[1])
-                pyautogui.moveTo(x, y, duration=drag_time)
-            pyautogui.mouseUp()
+                _pyautogui().moveTo(x, y, duration=drag_time)
+            _pyautogui().mouseUp()
         else:
             _abs_move(x, y)
             time.sleep(0.1)
@@ -430,7 +435,7 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
         driver = self._get_gamescope_driver()
         if driver is not None:
             return driver.key_press(key)
-        return pyautogui.press(key)
+        return _pyautogui().press(key)
 
     def input_text(self, text: str):
         driver = self._get_gamescope_driver()
@@ -443,9 +448,9 @@ class LinuxInput(AbstractInput, metaclass=SingletonMeta):
             pyperclip.copy(text)
         except Exception:
             try:
-                pyautogui.typewrite(text)
+                _pyautogui().typewrite(text)
                 return
             except Exception:
                 log.error("pyautogui 直接输入失败")
                 return
-        pyautogui.hotkey("ctrl", "v")
+        _pyautogui().hotkey("ctrl", "v")

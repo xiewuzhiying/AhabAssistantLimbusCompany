@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -241,6 +242,7 @@ class TestGamescopeDirectZPixmapCapture:
         assert not errors, f"并发截图出现错误: {errors}"
         assert len(results) == 20
 
+    @pytest.mark.skipif(os.environ.get("AALC_BENCHMARKS") != "1", reason="opt-in hardware timing benchmark")
     def test_conversion_latency_under_5ms(self):
         """单帧零拷贝/低开销转换基准测试：要求 1080p 裸像素封装耗时在 5ms 以内。"""
         # PIL 转换耗时

@@ -143,4 +143,4 @@ else:
         root_dir="./dist",
         base_dir="AALC",
     )
-print(f"打包完成: dist/{archive_base}.{ext}")
+print(f"Build complete: dist/{archive_base}.{ext}")

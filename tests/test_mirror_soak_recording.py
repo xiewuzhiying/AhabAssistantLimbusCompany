@@ -33,9 +33,12 @@ def test_recorder_exits_when_worker_ignores_stop(tmp_path):
     # deliberately ignores cancellation; no game or X11 connection is used.
     tools = tmp_path / "bin"
     tools.mkdir()
-    gamescope = tools / "gamescope"
-    gamescope.write_text("#!/bin/sh\necho gamescope-test >&2\n", encoding="utf-8")
-    gamescope.chmod(0o755)
+    # Version metadata is unrelated to worker shutdown. Keep it independent of
+    # installed Gamescope and checkout ownership inside CI containers.
+    for name, command in {"gamescope": "echo gamescope-test >&2", "git": "echo test-head"}.items():
+        binary = tools / name
+        binary.write_text(f"#!/bin/sh\n{command}\n", encoding="utf-8")
+        binary.chmod(0o755)
     code = r'''
 import logging, sys, time
 from types import ModuleType, SimpleNamespace

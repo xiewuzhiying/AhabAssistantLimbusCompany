@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 import psutil
-from Xlib import XK, X, display
+from Xlib import XK, X
+from Xlib import display as xdisplay
 from Xlib.error import ConnectionClosedError, DisplayConnectionError, XError
 from Xlib.ext import randr, xtest
 from Xlib.protocol import event as xevent
@@ -193,7 +194,7 @@ class X11Handle(Handle):
           bring_window_into_view` 等纯几何方法直接继承自 `Handle` 基类。
     """
 
-    _disp: display.Display | None = None
+    _disp: xdisplay.Display | None = None
     _display_name: str | None = None
     _is_gamescope: bool = False
 
@@ -207,7 +208,7 @@ class X11Handle(Handle):
             self._is_gamescope = self._display_name in detect_gamescope_displays()
         self._disp = None
         try:
-            self._disp = display.Display(self._display_name)
+            self._disp = xdisplay.Display(self._display_name)
             if self._display_name is None and self._disp is not None:
                 try:
                     self._display_name = self._disp.get_display_name()
@@ -242,7 +243,7 @@ class X11Handle(Handle):
     def _switch_display(self, new_display_name: str) -> bool:
         """切换到新的 X11 Display 连接"""
         try:
-            new_disp = display.Display(new_display_name)
+            new_disp = xdisplay.Display(new_display_name)
         except Exception as e:
             log.debug(f"无法连接到 X 显示服务 {new_display_name}: {e}")
             return False
@@ -276,7 +277,7 @@ class X11Handle(Handle):
 
     # ------------------------------------------------------------------ 基础
     @property
-    def display(self) -> display.Display:
+    def display(self) -> xdisplay.Display:
         """暴露底层 X11 Display 连接"""
         return self._dpy
 
@@ -312,9 +313,9 @@ class X11Handle(Handle):
         return self._window_obj().get_geometry()
 
     @property
-    def _dpy(self) -> display.Display:
+    def _dpy(self) -> xdisplay.Display:
         if self._disp is None:
-            self._disp = display.Display(self._display_name)
+            self._disp = xdisplay.Display(self._display_name)
         return self._disp
 
     @property
@@ -326,7 +327,7 @@ class X11Handle(Handle):
         wid = self._hwnd if wid is None else wid
         return self._dpy.create_resource_object("window", wid)
 
-    def _get_atom_value(self, win, atom_name: str, dpy: display.Display | None = None):
+    def _get_atom_value(self, win, atom_name: str, dpy: xdisplay.Display | None = None):
         d = dpy if dpy is not None else self._dpy
         try:
             atom = d.intern_atom(atom_name, True)
@@ -371,7 +372,7 @@ class X11Handle(Handle):
 
         # 2. 建立新连接探测
         try:
-            probe_disp = display.Display(disp_name)
+            probe_disp = xdisplay.Display(disp_name)
         except Exception as e:
             log.debug(f"无法连接到显示服务 {disp_name}: {e}")
             return 0
@@ -442,7 +443,7 @@ class X11Handle(Handle):
         log.error("未能获取到隔离游戏窗口", stacklevel=3)
         return 0
 
-    def _safe_enum_windows(self, dpy: display.Display | None = None) -> list[dict]:
+    def _safe_enum_windows(self, dpy: xdisplay.Display | None = None) -> list[dict]:
         try:
             if dpy is None:
                 return self._enum_windows()
@@ -510,7 +511,7 @@ class X11Handle(Handle):
         """归一化 X11 窗口标题，兼容游戏标题中的空格和大小写差异。"""
         return "".join(char for char in (value or "").casefold() if char.isalnum())
 
-    def _enum_windows(self, dpy: display.Display | None = None) -> list[dict]:
+    def _enum_windows(self, dpy: xdisplay.Display | None = None) -> list[dict]:
         """遍历窗口树收集窗口信息。
 
         X11 会话下 KWin 会把受管客户窗口重新父化到框架窗口之下（客户窗口
@@ -566,7 +567,7 @@ class X11Handle(Handle):
         results.sort(key=lambda r: -r["depth"])
         return results
 
-    def _window_title(self, win, dpy: display.Display | None = None) -> str:
+    def _window_title(self, win, dpy: xdisplay.Display | None = None) -> str:
         value = self._get_atom_value(win, "_NET_WM_NAME", dpy=dpy)
         if value:
             try:

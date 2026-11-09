@@ -114,3 +114,18 @@ def test_linux_init_game_does_not_start_steam_twice(monkeypatch) -> None:
 
     game.start_game.assert_not_called()
     screen.init_handle.assert_called_once_with()
+
+
+def test_preview_import_never_initializes_application_config(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    code = 'import sys; import scripts.linux.preview_frame; assert "module.config" not in sys.modules'
+    result = subprocess.run([sys.executable, '-c', code], cwd=tmp_path,
+                            env={**os.environ, 'PYTHONPATH': str(root)},
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert not list(tmp_path.iterdir())

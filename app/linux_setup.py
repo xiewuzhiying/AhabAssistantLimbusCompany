@@ -1,5 +1,7 @@
 """Native Linux setup, diagnostics and a preview of the owned automation session."""
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -43,20 +45,28 @@ class FrameReader(QThread):
     waiting = Signal()
 
     def run(self):
-        from module.automation.screenshot import ScreenShot
         from module.game_and_screen.gamescope_launcher import GamescopeLauncher
-        from module.game_and_screen.x11_handle import X11Handle
-        handle = X11Handle()
+        root = Path(__file__).resolve().parents[1]
+        launcher = GamescopeLauncher()
         while not self.isInterruptionRequested():
             try:
-                if not GamescopeLauncher().is_running():
+                owned_display = launcher.display_name() if launcher.is_running() else None
+                if not owned_display:
                     self.waiting.emit()
                 else:
-                    handle.init_handle('LimbusCompany')
-                    frame = ScreenShot.take_screenshot_x11(gray=False, handle=handle).convert('RGB')
-                    image = QImage(frame.tobytes(), frame.width, frame.height, frame.width*3, QImage.Format.Format_RGB888).copy()
-                    self.frame.emit(image)
-            except Exception:
+                    # A stuck X server must not hold a GUI worker or its locks forever.
+                    frame = subprocess.run(
+                        [sys.executable, '-m', 'scripts.linux.preview_frame', '--display', owned_display],
+                        cwd=root, capture_output=True, timeout=5, check=True,
+                    )
+                    if self.isInterruptionRequested():
+                        break
+                    image = QImage.fromData(frame.stdout)
+                    if image.isNull() or launcher.display_name() != owned_display:
+                        self.waiting.emit()
+                    else:
+                        self.frame.emit(image)
+            except (OSError, ValueError, subprocess.SubprocessError):
                 self.waiting.emit()
             self.msleep(200)
 

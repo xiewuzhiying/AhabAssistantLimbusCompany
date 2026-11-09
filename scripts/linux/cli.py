@@ -19,9 +19,7 @@ def main() -> int:
     for name in ('doctor', 'status'):
         diagnostic = sub.add_parser(name)
         diagnostic.add_argument('--json', action='store_true')
-    preview = sub.add_parser('preview', help='Open a read-only game preview')
-    preview.add_argument('--fps', type=int, default=5)
-    preview.add_argument('--width', type=int, default=960)
+    sub.add_parser('preview', help='Open a read-only game preview')
     init = sub.add_parser('create-profile', help='Copy an inactive Steam prefix once')
     init.add_argument('--source', type=Path, required=True)
     init.add_argument('--profile', type=Path)

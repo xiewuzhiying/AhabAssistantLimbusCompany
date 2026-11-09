@@ -54,6 +54,7 @@ jobs:
           python scripts/ci_version.py \
             --channel "${{ steps.channel.outputs.channel }}" \
             --repo "${{ github.repository }}" \
+            --releases-repo KIYI671/AhabAssistantLimbusCompany \
             --workflow-file "ci.yaml" \
             --current-run-id "${{ github.run_id }}" \
             --current-run-number "${{ github.run_number }}"

@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs-json", type=Path, help="Path to mocked workflow runs JSON for local tests.")
     parser.add_argument("--channel", choices=CI_CHANNELS, required=True, help="CI prerelease channel to generate.")
     parser.add_argument("--repo", help="GitHub repository in owner/name format.")
+    parser.add_argument("--releases-repo", help="Release baseline repository (defaults to --repo).")
     parser.add_argument("--workflow-file", default="ci.yaml", help="Workflow file name used to count CI runs.")
     parser.add_argument("--current-run-id", type=int, required=True, help="Current GitHub Actions run id.")
     parser.add_argument("--current-run-number", type=int, help="Current GitHub Actions workflow run number.")
@@ -186,7 +187,8 @@ def load_releases_and_runs(args: argparse.Namespace) -> tuple[list[dict[str, Any
         raise ValueError("--repo is required unless --releases-json and --runs-json are provided.")
 
     # 在线模式下分别拉取 release 列表和当前 workflow 的运行记录。
-    releases_url = f"{args.github_api_url}/repos/{args.repo}/releases"
+    releases_repo = args.releases_repo or args.repo
+    releases_url = f"{args.github_api_url}/repos/{releases_repo}/releases"
     workflow_path = quote(args.workflow_file, safe="")
     runs_url = (
         f"{args.github_api_url}/repos/{args.repo}/actions/workflows/{workflow_path}/runs"

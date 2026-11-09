@@ -95,17 +95,20 @@ def start_socket_server(port, signaler):
         while True:
             conn, addr = s.accept()
             with conn:
-                data = conn.recv(1024).decode("utf-8")
-                if data:
-                    # 收到参数后通过信号发送给主线程处理
-                    args = data.split("|")
-                    if '--native-profile' in args and '--skip-setup' in args:
-                        request = {'args': args, 'done': threading.Event(), 'ok': False}
-                        signaler.native_request.emit(request)
-                        request['done'].wait(10)
-                        conn.sendall(b'OK' if request['ok'] else b'REJECTED')
-                    else:
-                        signaler.arguments_received.emit(args)
+                try:
+                    conn.settimeout(2)
+                    data = conn.recv(1024).decode("utf-8")
+                    if data:
+                        args = data.split("|")
+                        if '--native-profile' in args and '--skip-setup' in args:
+                            from module.instance_request import NativeRequest
+                            request = NativeRequest(args)
+                            signaler.native_request.emit(request)
+                            conn.sendall(request.reply())
+                        else:
+                            signaler.arguments_received.emit(args)
+                except (OSError, UnicodeError) as exc:
+                    log.warning(f"Instance request connection closed: {exc}")
 
 
 def send_args_to_existing_instance(port, args):
@@ -118,11 +121,12 @@ def send_args_to_existing_instance(port, args):
             if '--native-profile' in args and '--skip-setup' in args:
                 s.settimeout(12)
                 try:
-                    accepted = s.recv(32) == b'OK'
+                    reply = s.recv(32)
                 except OSError:
-                    accepted = False
-                if not accepted:
-                    sys.stderr.write('CONFIG_REQUEST_REJECTED: inspect existing instance diagnostics\n')
+                    reply = b'PENDING'
+                if reply != b'OK':
+                    code = 'CONFIG_REQUEST_REJECTED' if reply == b'REJECTED' else 'CONFIG_REQUEST_UNCONFIRMED'
+                    sys.stderr.write(f'{code}: inspect existing instance settings before retrying\n')
                     raise SystemExit(2)
         return True
     except ConnectionRefusedError:
@@ -178,10 +182,7 @@ if __name__ == "__main__":
         # 如果需要，可以在这里调用 ui.open_file(args[0]) 等
 
     def handle_native_request(request):
-        try:
-            request['ok'] = ui.command_start(['aalc', *request['args']]) is True
-        finally:
-            request['done'].set()
+        request.execute(lambda: ui.command_start(['aalc', *request.args]) is True)
 
     signaler.native_request.connect(handle_native_request)
     signaler.arguments_received.connect(handle_args)

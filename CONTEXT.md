@@ -18,3 +18,7 @@
 - **Audio Isolation**: Suppressing game audio output via `WINEDLLOVERRIDES="winepulse.drv=d;winealsa.drv=d"` and `-nosound` so no PipeWire streams appear in the host desktop mixer. See `docs/adr/0001-gamescope-headless-execution-and-audio-isolation.md`.
 - **Freedesktop Notification**: Desktop notification standard specified by freedesktop.org over Session D-Bus (`org.freedesktop.Notifications`), supported across KDE, GNOME, XFCE, Dunst, Mako, and Wayland compositors.
 - **Web Screen Streamer**: Lightweight HTTP MJPEG service broadcasting real-time visual frames from the game display handle to web browsers on demand.
+
+### Native Linux Automation
+- **Automation Profile**: The private game settings and local game state selected for AALC automation, separate from normal Steam play.
+- **Automation Session**: One game run owned by AALC, including its input target, captured window and lifetime. An independently launched player game is not an automation session.

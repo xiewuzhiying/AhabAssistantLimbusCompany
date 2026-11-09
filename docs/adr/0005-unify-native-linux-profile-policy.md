@@ -1,0 +1,5 @@
+# Unify native Linux automation profile policy
+
+Accepted during the 2026-11-10 design interview. All native Linux entry points use the application's persisted private-profile and graphics selection; missing or unusable private settings must not silently select the player's Steam prefix. A request for different settings in an existing instance is explicit, and settings cannot switch during a running session.
+
+The default first-run flow copies an inactive prefix after one successful ordinary Steam launch. Experts may skip the wizard by selecting an already prepared private prefix; validation and registration are still required, without an AALC-origin marker prerequisite. New copies preserve game graphics preferences; the automation API defaults to D3D11, and post-processing changes are opt-in. The initial source support boundary is x86_64 Linux with a systemd user manager, Gamescope and native Steam/Proton; Arch-family and Debian-family instructions are prioritized, with Nix optional. This bounds lifecycle and installation work while preserving the separation between player and automation settings.

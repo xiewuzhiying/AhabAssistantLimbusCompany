@@ -31,6 +31,11 @@ def test_repeated_errors_preserve_messages_but_bound_expensive_evidence():
 def test_recorder_exits_when_worker_ignores_stop(tmp_path):
     # Exercise the complete Qt supervisor in a child process. The fake worker
     # deliberately ignores cancellation; no game or X11 connection is used.
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    gamescope = tools / "gamescope"
+    gamescope.write_text("#!/bin/sh\necho gamescope-test >&2\n", encoding="utf-8")
+    gamescope.chmod(0o755)
     code = r'''
 import logging, sys, time
 from types import ModuleType, SimpleNamespace
@@ -74,10 +79,12 @@ sys.exit(main())
 '''
     result = subprocess.run(
         [sys.executable, "-c", code, "--output", str(tmp_path / "run"), "--hours", "0"],
-        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
+             "PATH": str(tools) + os.pathsep + os.environ.get("PATH", "")},
         capture_output=True, text=True, timeout=18,
     )
     assert result.returncode == 1, result.stderr
+    assert (tmp_path / "run/summary.json").is_file(), result.stderr
     summary = json.loads((tmp_path / "run/summary.json").read_text())
     assert summary["reason"] == "time-limit"
     assert summary["worker_shutdown_timeout"] is True

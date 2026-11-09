@@ -11,6 +11,7 @@ on:
 
 jobs:
   mirrorchyan:
+    if: github.repository == 'KIYI671/AhabAssistantLimbusCompany'
     runs-on: macos-latest
 
     steps:

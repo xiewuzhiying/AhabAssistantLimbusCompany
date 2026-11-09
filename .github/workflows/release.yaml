@@ -13,6 +13,7 @@ jobs:
       version: ${{ github.ref_name }}
 
   release:
+    if: github.repository == 'KIYI671/AhabAssistantLimbusCompany'
     runs-on: windows-latest
     needs: build
     steps:

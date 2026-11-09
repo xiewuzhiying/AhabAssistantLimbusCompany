@@ -1,6 +1,6 @@
 # Linux PR readiness
 
-Status: all design decisions accepted; awaiting final shared-understanding confirmation before implementation.
+Status: implemented locally; branch preparation and validation are recorded in linux-readiness-delivery.md.
 Review point: 23681704664973b60f857f7d5bd355bfa7ca9024.
 
 ## Confirmed scope

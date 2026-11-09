@@ -1,11 +1,13 @@
 """Failure storms must not turn the soak recorder into an image-writing loop."""
 
-import logging
 import json
+import logging
 import os
 import subprocess
 import sys
 from unittest.mock import Mock
+
+import pytest
 
 from scripts.diagnostics.run_mirror_soak import IncidentLog
 
@@ -25,6 +27,7 @@ def test_repeated_errors_preserve_messages_but_bound_expensive_evidence():
     assert snapshot.call_count == 2
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux supervisor uses SIGUSR1 and managed sessions")
 def test_recorder_exits_when_worker_ignores_stop(tmp_path):
     # Exercise the complete Qt supervisor in a child process. The fake worker
     # deliberately ignores cancellation; no game or X11 connection is used.

@@ -5,8 +5,9 @@ from module.native_linux import check_profile, load_settings, save_settings
 
 def test_settings_survive_new_process_environment(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
-    save_settings('/private/game', 'd3d12')
-    assert load_settings() == {'profile': '/private/game', 'graphics_api': 'd3d12'}
+    profile = str((tmp_path/'private/game').resolve())
+    save_settings(profile, 'd3d12')
+    assert load_settings() == {'profile': profile, 'graphics_api': 'd3d12'}
 
 
 def test_import_rejects_steam_prefix(tmp_path):

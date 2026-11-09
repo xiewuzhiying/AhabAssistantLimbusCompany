@@ -1,0 +1,28 @@
+name: Linux source checks
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [debian:bookworm, archlinux:base]
+    container: ${{ matrix.image }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONPATH: .
+    steps:
+      - name: Install system libraries
+        run: |
+          if command -v apt-get; then
+            apt-get update
+            apt-get install -y git curl ca-certificates libegl1 libgl1 libxkbcommon0 libdbus-1-3
+          else
+            pacman -Syu --noconfirm git curl ca-certificates libglvnd libxkbcommon dbus
+          fi
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv sync --frozen
+      - run: uv run python -c "import PySide6, cv2, onnxruntime, Xlib"
+      - run: uv run pytest -q

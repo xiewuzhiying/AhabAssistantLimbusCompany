@@ -1,38 +1,34 @@
-# Linux usage
+# Linux source installation
 
-Run from this checkout on NixOS. Keep Steam logged in. The native automation game uses an isolated Gamescope display and a systemd user service. A functioning user manager, Steam/Proton/runtime installation and graphics driver are required. Windows and simulator operation do not use this service. Frozen Linux packages are explicitly rejected for now; use this source entry point.
+Supported initial scope: x86_64 Linux, a systemd user session, Gamescope and native Steam/Proton. Arch-family and Debian-family distributions are primary source-install targets; NixOS retains its development shell. Flatpak Steam, non-systemd systems and frozen Linux bundles are outside this release scope. Windows and simulator flows remain separate.
 
-Create a private profile once, with all games using the source prefix closed:
-
-```bash
-scripts/linux/aalc create-profile --source /path/to/steamapps/compatdata/1973530
-scripts/linux/aalc post-processing off
-scripts/linux/aalc run
-```
-
-The default profile is `$XDG_DATA_HOME/aalc/compatdata/1973530` (normally `~/.local/share/aalc/compatdata/1973530`). Copying preserves Wine symlinks and uses reflinks where available; it can otherwise require the full prefix size. Existing destinations are refused. Account state and cached assets are copied locally and must not be published. Later Steam game updates still apply because the game installation is shared. Do not run two sessions for the same game account simultaneously.
-
-`run` opens the normal AALC GUI and defaults only this launch to D3D11. For comparison use `run --graphics-api d3d12` or `run --graphics-api auto`. All profile commands accept `--profile /absolute/path`. This entry point explicitly selects its private profile; ordinary `python main.py` continues using configuration defaults. Configuration keys `compat_data_path` and `graphics_api` also work with normal startup; environment overrides are `AALC_COMPAT_DATA_PATH` and `AALC_GRAPHICS_API`. Prefix override works with automatically discovered games and creates missing directories. No Steam launch options are changed.
-
-While the task is running, open a read-only window:
+Install Steam, select Proton, successfully launch Limbus once and exit it. Keep Steam logged in while using AALC. Install uv using its official installation instructions, then install desktop dependencies (package availability depends on distribution release):
 
 ```bash
-scripts/linux/aalc preview --fps 5 --width 960
+# Debian/Ubuntu: enable your distribution's Steam repositories as appropriate
+sudo apt install gamescope libegl1 libgl1 libxkbcommon0 libdbus-1-3
+# Arch: Steam requires the distribution's multilib repository
+sudo pacman -S gamescope libglvnd libxkbcommon dbus
 ```
 
-Q or Escape closes only the viewer. Reopen after a game restart. Discovery currently requires exactly one Gamescope session visible through PipeWire; it does not select a host game as fallback. This is a local window, not a browser stream or interactive game controller. Logs: `~/.local/state/aalc/preview.log` (or `$XDG_STATE_HOME`).
+From the checkout, `uv sync --frozen` installs the pinned Python environment. Start with `scripts/linux/aalc run`, or `uv run python main.py`. On NixOS the wrapper uses `nix develop` automatically. Neither path needs a hardcoded Nix store location.
 
-With the game closed, `post-processing on|off` updates only the known `_ppOnBattle`, `_ppBloom`, `_ppBlur` booleans in the private profile's Limbus `LocalGameOptionData` registry record. It preserves other fields and keeps a first-write backup. Unknown schemas and unmarked profiles are refused. The `_ppSettingUsed` field is preserved because it is not a verified effect toggle. The mapping was observed locally; an update may change this schema. Cloud/account synchronization overriding these settings has not been ruled out.
+On first interactive launch, Linux setup explains the required Steam launch and offers copying its inactive `steamapps/compatdata/1973530` directory into a private location (normally `~/.local/share/aalc/compatdata/1973530`). It also accepts an existing private prefix. Copying is staged, checks available space, and cleans partial output on failure so retry is possible. Original settings are preserved; changes to post processing are optional. The default AALC API is D3D11, a compatibility choice rather than a diagnosed stall fix.
 
-Each launch creates a unique `aalc-game-*.service`. Normal stop terminates the whole service cgroup, including children that call setsid. A pidfd observes AALC death; when AALC disappears, the supervisor exits and systemd cleans the group. Processes deliberately moved into a separate cgroup by another manager are outside this guarantee. A missing user manager fails launch rather than silently weakening cleanup. `logs/gamescope.log` captures service output. Temporary environment payloads have mode 0600 and are deleted by the supervisor.
+The settings page provides Linux environment/profile controls and a read-only preview button in native Linux game mode. Preview uses the owned automation session; closing it does not stop the task. It waits for a restarted session. No host game or unrelated Gamescope is selected. Windows does not show these controls.
 
-## Graphics investigation
+Configuration is persisted under `$XDG_CONFIG_HOME/aalc/native-linux.json` (normally `~/.config/aalc/`). GUI, CLI, timers and login startup read it. Explicit profile/API requests are forwarded to the existing application and cannot switch an active session. Expert import bypasses the wizard but validates the prepared private prefix:
 
 ```bash
-nix develop --command python scripts/diagnostics/graphics_trial.py \
-  --profile "$HOME/.local/share/aalc/compatdata/1973530" \
-  --api d3d12 --post-processing off --seconds 120 \
-  --output .audit/graphics-trials/d3d12-off-1
+scripts/linux/aalc run --skip-setup --profile /absolute/private/compatdata
+scripts/linux/aalc run --graphics-api auto
+scripts/linux/aalc doctor --json
+scripts/linux/aalc status --json
+scripts/linux/aalc preview
 ```
 
-Run one trial at a time, keeping Proton, frame rate and resolution fixed. Compare D3D11/D3D12 × post processing on/off with repeated cold starts. This tool changes the selected private profile, captures frames and Player.log, and stops its own session. It does not click through login, consume game resources, or label a static menu as a freeze. A successful title-screen startup cannot resolve the previously observed post-login loading stall. To test that stage, enter the same scenario through normal AALC task execution and preserve frame history and logs. Results may contain account identifiers; keep `.audit` private.
+Diagnostics are versioned JSON with stable check codes, phase, suggested action, retryability, state and log location. stdout contains JSON; failures return nonzero. They do not export account data, registry contents, screenshots or full process environments. Setup includes copyable diagnostics. Missing prerequisites terminate unattended startup instead of opening a wizard or retrying indefinitely. Fix the reported condition before retrying.
+
+Session cleanup uses a unique systemd user service, pidfd owner monitoring and cgroup termination. Native task cancellation is cooperative and another task cannot start while its worker is cleaning up. Processes deliberately migrated into another cgroup are outside this guarantee. Stop/close can wait for an in-flight external call; they do not forcibly kill a Python thread holding application locks.
+
+Ordinary CI needs no installed game or graphics session. Real tests are opt-in with `AALC_LIVE_TESTS=1`, `PYTHONPATH=$PWD`, and an available systemd/graphics session. Distribution container checks validate installation/imports/tests, not real-game operation. Windows, Debian-family and Arch-family CI definitions are included; local NixOS validation is recorded separately.

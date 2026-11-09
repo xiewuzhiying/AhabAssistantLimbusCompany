@@ -84,6 +84,7 @@ QApplication.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
 # 创建一个辅助类用于在主线程处理信号
 class ArgumentSignaler(QObject):
     arguments_received = Signal(list)
+    native_request = Signal(object)
 
 
 def start_socket_server(port, signaler):
@@ -97,7 +98,14 @@ def start_socket_server(port, signaler):
                 data = conn.recv(1024).decode("utf-8")
                 if data:
                     # 收到参数后通过信号发送给主线程处理
-                    signaler.arguments_received.emit(data.split("|"))
+                    args = data.split("|")
+                    if '--native-profile' in args and '--skip-setup' in args:
+                        request = {'args': args, 'done': threading.Event(), 'ok': False}
+                        signaler.native_request.emit(request)
+                        request['done'].wait(10)
+                        conn.sendall(b'OK' if request['ok'] else b'REJECTED')
+                    else:
+                        signaler.arguments_received.emit(args)
 
 
 def send_args_to_existing_instance(port, args):
@@ -107,6 +115,15 @@ def send_args_to_existing_instance(port, args):
             s.settimeout(1.0)  # 设置 1 秒超时
             s.connect(("127.0.0.1", port))
             s.sendall("|".join(args).encode("utf-8"))
+            if '--native-profile' in args and '--skip-setup' in args:
+                s.settimeout(12)
+                try:
+                    accepted = s.recv(32) == b'OK'
+                except OSError:
+                    accepted = False
+                if not accepted:
+                    sys.stderr.write('CONFIG_REQUEST_REJECTED: inspect existing instance diagnostics\n')
+                    raise SystemExit(2)
         return True
     except ConnectionRefusedError:
         return False
@@ -160,6 +177,13 @@ if __name__ == "__main__":
         ui.raise_()
         # 如果需要，可以在这里调用 ui.open_file(args[0]) 等
 
+    def handle_native_request(request):
+        try:
+            request['ok'] = ui.command_start(['aalc', *request['args']]) is True
+        finally:
+            request['done'].set()
+
+    signaler.native_request.connect(handle_native_request)
     signaler.arguments_received.connect(handle_args)
 
     # 4. 在后台启动 Socket 服务器（非阻塞主线程）

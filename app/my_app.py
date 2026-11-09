@@ -349,6 +349,7 @@ class MainWindow(FramelessWindow):
                 if self._has_running_script():
                     raise RuntimeError('SESSION_BUSY: 任务运行中不能切换配置')
                 apply_selection(profile, api, None if '--skip-setup' in argv else self)
+                return True
             except (ValueError, IndexError, RuntimeError, OSError) as exc:
                 from PySide6.QtWidgets import QMessageBox
                 if '--skip-setup' in argv:

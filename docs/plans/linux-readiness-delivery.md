@@ -15,7 +15,7 @@ Validation:
 Independent Standards and Spec reviews identified lifecycle/UI/diagnostic issues; implemented fixes include private preview handle on a worker, waiting for tools/readers before deletion, close-confirmation latch, central failed-cleanup gate, skip-setup modal removal, and side-effect-free diagnostic discovery.
 
 Remaining limitations for review:
-- Legacy single-instance protocol has no response acknowledgement: failed expert selection is logged by the existing GUI, while the forwarding client can exit successfully. This remains short of a fully machine-readable command response.
+- Expert configuration forwarding now waits for an acknowledgement; rejected or timed-out requests return exit 2. Existing non-expert command forwarding retains its legacy protocol.
 - Cancellation is cooperative; in-flight Xlib/subprocess calls can delay shutdown. No forceful Python thread termination is used for native workers, but a permanently stuck external call is not a bounded shutdown guarantee.
 - doctor recognizes standard Steam layout and environment path overrides; application YAML custom path overrides are not comprehensively mirrored by the lightweight detector.
 - Setup copy displays busy/completion status, not byte progress. Copies use conservative free-space checks even on reflink filesystems.

@@ -10,7 +10,7 @@ import pytest
 
 
 def load_battle(auto):
-    tree = ast.parse(Path('tasks/battle/battle.py').read_text())
+    tree = ast.parse(Path('tasks/battle/battle.py').read_text(encoding='utf-8'))
     classes = [n for n in tree.body if isinstance(n, ast.ClassDef)
                and n.name in {'Battle', 'DefenseForSoloState'}]
     battle = next(n for n in classes if n.name == 'Battle')

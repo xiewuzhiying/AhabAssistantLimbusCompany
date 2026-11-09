@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 
 def test_defense_waits_between_portrait_clicks():
-    tree = ast.parse(Path('tasks/battle/battle.py').read_text())
+    tree = ast.parse(Path('tasks/battle/battle.py').read_text(encoding='utf-8'))
     battle_class = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Battle')
     battle_class.body = [
         method for method in battle_class.body

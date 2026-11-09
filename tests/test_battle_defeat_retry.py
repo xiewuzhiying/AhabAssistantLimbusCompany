@@ -11,7 +11,7 @@ import pytest
 
 
 def replay(monkeypatch, frames, defense_state=None):
-    tree = ast.parse(Path('tasks/battle/battle.py').read_text())
+    tree = ast.parse(Path('tasks/battle/battle.py').read_text(encoding='utf-8'))
     battle = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Battle')
     battle.body = [n for n in battle.body if isinstance(n, ast.FunctionDef)
                    and n.name in {'__init__', 'fight', '_confirm_defense_started'}]

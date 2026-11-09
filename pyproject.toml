@@ -55,7 +55,9 @@ Issues = "https://github.com/KIYI671/AhabAssistantLimbusCompany/issues"
 
 [tool.uv]
 managed = true
-override-dependencies = ["opencv-python; python_version < '0'"]
+# PyAutoGUI/mouseinfo request the obsolete python3-xlib distribution, which
+# overwrites the same Xlib package as python-xlib. Keep one provider.
+override-dependencies = ["opencv-python; python_version < '0'", "python3-xlib; python_version < '0'"]
 
 # used by `pyside6-project lupdate`
 [tool.pyside6-project]

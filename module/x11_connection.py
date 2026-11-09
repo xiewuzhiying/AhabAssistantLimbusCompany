@@ -6,7 +6,8 @@ import Xlib.support.unix_connect as _xlib_unix_connect
 # 猴子补丁：为 python-xlib 增加 Linux 抽象套接字（abstract unix domain socket）自动回退能力。
 # Gamescope / Xwayland 在容器或非 FHS 环境下可能仅监听抽象套接字（@/tmp/.X11-unix/Xn），
 # 磁盘上的文件套接字不可达时通过抽象套接字建立连接。
-_orig_get_unix_socket = _xlib_unix_connect._get_unix_socket
+# This private helper is defined conditionally on Unix in python-xlib.
+_orig_get_unix_socket = getattr(_xlib_unix_connect, "_get_unix_socket")
 
 
 def _abstract_fallback_get_unix_socket(address):
@@ -27,5 +28,5 @@ def _abstract_fallback_get_unix_socket(address):
 
 
 def enable_abstract_socket_fallback():
-    _xlib_unix_connect._get_unix_socket = _abstract_fallback_get_unix_socket
+    setattr(_xlib_unix_connect, "_get_unix_socket", _abstract_fallback_get_unix_socket)
 

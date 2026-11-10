@@ -2,7 +2,16 @@
 set -euo pipefail
 aalc_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$aalc_root"
-if [ -e /etc/NIXOS ] && command -v nix >/dev/null 2>&1; then
+is_nixos() (
+    ID=
+    if [ -r /etc/os-release ]; then
+        . /etc/os-release
+    elif [ -r /usr/lib/os-release ]; then
+        . /usr/lib/os-release
+    fi
+    [ "$ID" = nixos ]
+)
+if is_nixos && command -v nix >/dev/null 2>&1; then
     exec nix develop --command python scripts/linux/cli.py "$@"
 elif command -v uv >/dev/null 2>&1; then
     exec uv run --frozen python scripts/linux/cli.py "$@"

@@ -8,7 +8,7 @@ REAL = {'test_gamescope_live_integration.py', 'test_gamescope_visual_closed_loop
         'test_gamescope_launcher.py'}
 LINUX = REAL | {'test_isolation_boundaries.py', 'test_x11_screenshot.py',
                  'test_linux_startup_guard.py', 'test_gamescope_launcher_lifecycle.py',
-                 'test_automation_profile.py', 'test_linux_power_leases.py'}
+                 'test_automation_profile.py', 'test_linux_power_leases.py', 'test_linux_preview.py'}
 
 
 def pytest_ignore_collect(collection_path: Path, config):

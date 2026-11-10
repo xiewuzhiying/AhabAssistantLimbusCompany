@@ -1,7 +1,8 @@
 """Native Linux setup, diagnostics and a preview of the owned automation session."""
 import json
 import subprocess
-import sys
+import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from module.native_linux import check_profile, load_settings, report, save_settings
+from module.preview_stream import PreviewStream
 
 
 class ProfileCopy(QThread):
@@ -41,34 +43,63 @@ class ProfileCopy(QThread):
 
 
 class FrameReader(QThread):
-    frame = Signal(QImage)
-    waiting = Signal()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lock = threading.Lock()
+        self._latest = None
+        self._pending = False
+
+    def publish(self, image):
+        with self._lock:
+            self._latest = image
+            self._pending = True
+
+    def take_latest(self):
+        with self._lock:
+            pending, image = self._pending, self._latest
+            self._pending = False
+            self._latest = None
+            return pending, image
 
     def run(self):
         from module.game_and_screen.gamescope_launcher import GamescopeLauncher
-        root = Path(__file__).resolve().parents[1]
         launcher = GamescopeLauncher()
-        while not self.isInterruptionRequested():
-            try:
-                owned_display = launcher.display_name() if launcher.is_running() else None
-                if not owned_display:
-                    self.waiting.emit()
-                else:
-                    # A stuck X server must not hold a GUI worker or its locks forever.
-                    frame = subprocess.run(
-                        [sys.executable, '-m', 'scripts.linux.preview_frame', '--display', owned_display],
-                        cwd=root, capture_output=True, timeout=5, check=True,
-                    )
-                    if self.isInterruptionRequested():
-                        break
-                    image = QImage.fromData(frame.stdout)
-                    if image.isNull() or launcher.display_name() != owned_display:
-                        self.waiting.emit()
+        stream = None
+        owner = None
+        try:
+            while not self.isInterruptionRequested():
+                started = time.monotonic()
+                interval = .05
+                try:
+                    if stream and (launcher.process is not owner or not launcher.is_running()):
+                        stream.close()
+                        stream = None
+                    if stream is None:
+                        owner = launcher.process
+                        owned_display = launcher.display_name() if launcher.is_running() else None
+                        if owned_display and launcher.process is owner:
+                            stream = PreviewStream(owned_display)
+                    if stream is None:
+                        self.publish(None)
+                        interval = .2
                     else:
-                        self.frame.emit(image)
-            except (OSError, ValueError, subprocess.SubprocessError):
-                self.waiting.emit()
-            self.msleep(200)
+                        width, height, pixels = stream.read_frame(self.isInterruptionRequested)
+                        if launcher.process is owner and launcher.is_running():
+                            # QImage must own its buffer after the next capture starts.
+                            self.publish(QImage(pixels, width, height, width * 3, QImage.Format.Format_RGB888).copy())
+                        else:
+                            self.publish(None)
+                except (OSError, ValueError, EOFError, subprocess.SubprocessError):
+                    if stream:
+                        stream.close()
+                        stream = None
+                    self.publish(None)
+                    interval = .2
+                if not self.isInterruptionRequested():
+                    self.msleep(max(0, int((interval - (time.monotonic() - started)) * 1000)))
+        finally:
+            if stream:
+                stream.close()
 
 
 class Preview(QDialog):
@@ -80,16 +111,29 @@ class Preview(QDialog):
         self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         QVBoxLayout(self).addWidget(self.picture)
         self.reader = FrameReader(self)
-        self.reader.frame.connect(self.show_frame)
-        self.reader.waiting.connect(lambda: self.picture.setText('等待当前 AALC 会话画面…'))
+        # Poll a single latest frame: queued per-frame signals accumulate latency
+        # when the GUI thread is occupied by other work.
+        self.timer = QTimer(self)
+        self.timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(50)
         self.reader.finished.connect(self.close)
         self.reader.start()
+
+    def refresh(self):
+        pending, image = self.reader.take_latest()
+        if pending:
+            if image is None:
+                self.picture.setText('等待当前 AALC 会话画面…')
+            else:
+                self.show_frame(image)
 
     def show_frame(self, image):
         self.picture.setPixmap(QPixmap.fromImage(image).scaled(self.picture.size(), Qt.AspectRatioMode.KeepAspectRatio))
 
     def closeEvent(self, event):
         if self.reader.isRunning():
+            self.timer.stop()
             self.reader.requestInterruption()
             self.hide()
             event.ignore()

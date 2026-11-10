@@ -1,5 +1,6 @@
-"""Capture one frame without importing or modifying application configuration."""
+"""Capture frames without importing or modifying application configuration."""
 import argparse
+import struct
 import sys
 
 from PIL import Image
@@ -30,21 +31,34 @@ def game_window(connection):
     return connection.create_resource_object('window', max(matches)[2])
 
 
+def capture(window):
+    geometry = window.get_geometry()
+    if geometry.depth not in (24, 32):
+        raise ValueError('Unsupported preview pixel depth')
+    pixels = window.get_image(0, 0, geometry.width, geometry.height, X.ZPixmap, 0xFFFFFFFF)
+    frame = Image.frombuffer('RGB', (geometry.width, geometry.height), pixels.data, 'raw', 'BGRX', 0, 1)
+    frame.thumbnail((960, 540), Image.Resampling.BILINEAR)
+    return frame
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--display', required=True)
+    parser.add_argument('--stream', action='store_true', help='Reply to each stdin byte with a sized RGB frame')
     args = parser.parse_args()
     enable_abstract_socket_fallback()
     connection = display.Display(args.display)
     try:
         window = game_window(connection)
-        geometry = window.get_geometry()
-        if geometry.depth not in (24, 32):
-            raise ValueError('Unsupported preview pixel depth')
-        pixels = window.get_image(0, 0, geometry.width, geometry.height, X.ZPixmap, 0xFFFFFFFF)
-        frame = Image.frombuffer('RGB', (geometry.width, geometry.height), pixels.data, 'raw', 'BGRX', 0, 1)
-        frame.thumbnail((960, 540))
-        frame.save(sys.stdout.buffer, format='PNG')
+        if args.stream:
+            # Request/reply keeps at most one frame in flight, even if the GUI is busy.
+            while sys.stdin.buffer.read(1):
+                frame = capture(window)
+                sys.stdout.buffer.write(struct.pack('!II', *frame.size))
+                sys.stdout.buffer.write(frame.tobytes())
+                sys.stdout.buffer.flush()
+        else:
+            capture(window).save(sys.stdout.buffer, format='PNG')
         return 0
     finally:
         connection.close()

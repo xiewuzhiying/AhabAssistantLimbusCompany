@@ -74,7 +74,7 @@ def test_script_finished_follows_keep_awake_and_all_cleanup():
               script_task=lambda: 0, mediator=Mock(),
               apply_power_keep_awake=lambda value: calls.append(('awake', value)))
     # Exception classes normally imported by the worker module.
-    tree = ast.parse(Path('tasks/base/script_task_scheme.py').read_text())
+    tree = ast.parse(Path('tasks/base/script_task_scheme.py').read_text(encoding='utf-8'))
     imports = next(n for n in tree.body if isinstance(n, ast.ImportFrom)
                    and n.module == 'module.my_error.my_error')
     import module.my_error.my_error as errors

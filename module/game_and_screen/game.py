@@ -1,12 +1,14 @@
 import os
-import webbrowser
 from time import sleep, time
 
 import psutil
-import win32gui
 
 from module.config import cfg
+from module.platform_compat import IS_LINUX, IS_WINDOWS, open_uri
 from utils.singletonmeta import SingletonMeta
+
+if IS_WINDOWS:
+    import win32gui
 
 
 class Game(metaclass=SingletonMeta):
@@ -20,19 +22,17 @@ class Game(metaclass=SingletonMeta):
         self.check_in_short_time = 0
 
     def check_game_alive(self):
-        """检查游戏是否存活：进程与主窗口都在才算存活。
+        if IS_LINUX and not cfg.simulator:
+            from module.game_and_screen.gamescope_launcher import GamescopeLauncher
 
-        仅有进程不等于游戏正常——崩溃残留的"僵尸进程"没有窗口，
-        会骗过启动逻辑导致永远无法真正重启，这里顺手清理。
-        刚启动的游戏还没来得及创建窗口，给宽限期避免误杀。
-        """
+            return GamescopeLauncher().is_running()
         for proc in psutil.process_iter(["name", "pid"]):
             try:
                 # 获取进程的可执行文件名（如 "notepad.exe"）
-                proc_name = proc.info["name"]
+                proc_name = proc.info["name"] or ""
                 # 精确匹配进程名（区分大小写，取决于系统）
                 if self.process_name in proc_name:
-                    if win32gui.FindWindow("UnityWndClass", cfg.game_title_name):
+                    if not IS_WINDOWS or win32gui.FindWindow("UnityWndClass", cfg.game_title_name):
                         self.log.debug(f"游戏已启动：{self.process_name}，进程ID：{proc.pid}")
                         return True
                     if time() - proc.create_time() < 180:
@@ -62,19 +62,69 @@ class Game(metaclass=SingletonMeta):
             else:
                 return True
 
+        if IS_LINUX:
+            try:
+                from module.game_and_screen.gamescope_launcher import GamescopeLauncher
+
+                launcher = GamescopeLauncher()
+                if launcher.launch():
+                    self.log.info("已通过 Gamescope 模式启动游戏")
+                    return True
+                else:
+                    self.log.error("Gamescope 模式启动游戏失败")
+                    return False
+            except Exception as e:
+                self.log.error(f"Gamescope 模式启动游戏异常: {e}")
+                return False
+
         if not os.path.exists(self.game_path):
             self.log.error(f"游戏路径不存在：{self.game_path}，使用steam命令启动...")
             self.game_path_exists = False
 
         try:
-            # 调用系统打开该 URL（会触发 Steam 启动游戏）
-            webbrowser.open(self.game_url)
+            # 调用系统协议处理器打开 steam:// 链接（触发 Steam 启动游戏）
+            open_uri(self.game_url)
             self.log.info("使用steam命令启动游戏")
             sleep(5)
-            if not self.check_game_alive() and self.game_path_exists:
-                os.startfile(self.game_path)
+            # Linux 下直接启动 exe 需要 Proton，只能依赖 Steam，跳过路径兜底
+            if not self.check_game_alive() and self.game_path_exists and IS_WINDOWS:
+                from module.platform_compat import open_path
+
+                open_path(self.game_path)
                 self.log.info(f"游戏启动：{self.game_path}")
             return True
         except Exception as e:
             self.log.error(f"启动游戏时发生错误：{e}")
         return False
+
+    def kill_game(self) -> None:
+        """关闭游戏进程。跨平台生命周期门面方法。
+
+        Linux 模式下联动 GamescopeLauncher 回收独立沙箱及其子进程组；
+        Linux 仅终止托管沙箱，Windows 保留句柄与进程名清理。
+        """
+        if IS_LINUX:
+            try:
+                from module.game_and_screen.gamescope_launcher import (
+                    GamescopeLauncher,
+                )
+
+                GamescopeLauncher().terminate()
+            except Exception as e:
+                self.log.warning(f"终止 Gamescope 沙箱异常: {e}")
+            return
+
+        from module.platform_compat import kill_pid, kill_process_by_name
+
+        try:
+            from module.game_and_screen.screen import screen
+
+            pid = getattr(screen.handle, "pid", 0)
+            if pid and kill_pid(pid):
+                self.log.info("已退出游戏（PID）")
+                return
+        except Exception:
+            pass
+
+        if kill_process_by_name(self.process_name):
+            self.log.info("已退出游戏（进程名）")

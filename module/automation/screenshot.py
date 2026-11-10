@@ -1,19 +1,27 @@
 import time
-from ctypes import windll
+from contextlib import nullcontext
 
-import pyautogui
-import pywintypes
-import win32gui
-import win32ui
 from PIL import Image
 
 from module.config import cfg
-from module.game_and_screen import screen
 from module.logger import log
 from module.my_error.my_error import userStopError, withOutGameWinError
+from module.platform_compat import IS_WINDOWS
+
+if IS_WINDOWS:
+    from ctypes import windll
+
+    import pyautogui
+    import pywintypes
+    import win32gui
+    import win32ui
+
+from module.game_and_screen import screen
 
 
 class ScreenShot:
+    _content_offset_cache: dict[tuple[int, int], int] = {}
+
     @staticmethod
     def take_screenshot(gray: bool = True) -> Image.Image | None:
         """
@@ -25,6 +33,16 @@ class ScreenShot:
         """
         if cfg.simulator:
             if cfg.simulator_type == 0:
+                if not IS_WINDOWS:
+                    # MuMu 模拟器及其 IPC 依赖是 Windows 专属，Linux 下回退到 ADB 通道
+                    log.debug("MuMu 模拟器为 Windows 专属功能，已回退到 ADB 截图")
+                    try:
+                        return ScreenShot.adb_screenshot(gray)
+                    except userStopError:
+                        raise
+                    except Exception as e:
+                        log.debug(f"adb截图报错 {type(e).__name__}: {e}")
+                        return None
                 try:
                     return ScreenShot.mumu_screenshot(gray)
                 except userStopError:
@@ -44,13 +62,13 @@ class ScreenShot:
             # 将窗口移动到屏幕可见区域，确保获取到完整的内容
             screen.handle.bring_window_into_view(not cfg.background_click)
 
-        if cfg.background_click:
+        if IS_WINDOWS and cfg.background_click:
             try:
                 return ScreenShot.background_screenshot(gray)
             except Exception as e:
                 log.debug(f"后台截图报错 {type(e).__name__}: {e}")
                 return None
-        else:
+        elif IS_WINDOWS:
             try:
                 return ScreenShot.take_screenshot_gdi(gray)
             except Exception as e:
@@ -62,6 +80,224 @@ class ScreenShot:
                     msg = f"pyautogui截图失败，错误信息：{e2}"
                     log.debug(msg)
                     return None
+        else:
+            # Linux/X11：优先直接读取游戏窗口内容（窗口被遮挡时通常仍有效），
+            # 失败后回退到全屏捕获再裁剪。
+            if not ScreenShot._linux_window_is_ready():
+                return None
+            try:
+                image = ScreenShot.take_screenshot_x11(gray)
+                if ScreenShot._linux_frame_is_usable(image):
+                    return image
+                # 冷启动时 X11 窗口可能已经创建，但游戏还没有开始绘制。
+                # 空帧不能交给识别流程，否则 back_init_menu 会退回到默认的
+                # (1, 1) 点击分支。
+                log.debug("Linux 游戏窗口尚未绘制有效画面，等待下一帧")
+                return None
+            except Exception as e:
+                if getattr(screen.handle, "is_gamescope", False):
+                    log.debug(f"隔离窗口截图失败，等待恢复：{e}")
+                    return None
+                log.debug(f"X11窗口截图失败，尝试全屏捕获，错误信息：{e}")
+            try:
+                image = ScreenShot.take_screenshot_mss(gray)
+                if ScreenShot._linux_frame_is_usable(image):
+                    return image
+                log.debug("Linux 全屏截图为空，等待游戏画面就绪")
+                return None
+            except Exception as e:
+                msg = f"mss全屏截图失败，尝试使用pyautogui截图，错误信息：{e}"
+                log.debug(msg)
+                try:
+                    image = ScreenShot.take_screenshot_pyautogui(gray)
+                    if ScreenShot._linux_frame_is_usable(image):
+                        return image
+                    log.debug("Linux pyautogui截图为空，等待游戏画面就绪")
+                    return None
+                except Exception as e2:
+                    msg = f"pyautogui截图失败，错误信息：{e2}"
+                    log.debug(msg)
+                    return None
+
+    @staticmethod
+    def _linux_window_is_ready() -> bool:
+        """判断 Linux 下游戏窗口是否已有可用的客户区。"""
+        try:
+            left, top, right, bottom = screen.handle.rect(True)
+        except Exception as e:
+            log.debug(f"读取 Linux 游戏窗口区域失败，等待窗口就绪: {e}")
+            return False
+        if right <= left or bottom <= top:
+            log.debug("Linux 游戏窗口区域无效，等待窗口就绪")
+            return False
+        return True
+
+    @staticmethod
+    def _linux_frame_is_usable(image: Image.Image | None) -> bool:
+        """过滤窗口已出现但尚未绘制的空帧，避免误触发默认点击。"""
+        if image is None or image.width <= 0 or image.height <= 0:
+            return False
+        try:
+            return image.convert("L").getbbox() is not None
+        except Exception:
+            return False
+
+    @classmethod
+    def get_content_offset(cls, width: int, height: int) -> int | None:
+        """获取指定窗口分辨率下缓存的内容偏移"""
+        return cls._content_offset_cache.get((width, height))
+
+    @staticmethod
+    def _heuristic_offset(geo_height: int) -> int:
+        """按客户区高度与目标分辨率的差值估算内容区偏移"""
+        try:
+            target = int(cfg.set_win_size)
+        except Exception:
+            return 0
+        delta = geo_height - target
+        if 0 < delta <= 80:
+            return delta
+        return 0
+
+    @classmethod
+    def _resolve_content_offset(
+        cls,
+        geo_width: int,
+        geo_height: int,
+        img: Image.Image | None = None,
+    ) -> int:
+        """探测客户区内游戏画布的垂直偏移（结果按窗口尺寸缓存）。
+
+        Wine/Proton 的窗口装饰行为不稳定：有的启动会把自绘标题栏画进客户区
+        （游戏画布比目标分辨率矮一条），有的直接铺满客户区（游戏 UI 按
+        非 16:9 重排）。对候选偏移做模板匹配打分，取最优；画面上没有可
+        识别的主界面元素时不缓存结论，下一帧重新探测。
+        """
+        key = (geo_width, geo_height)
+        cached = cls._content_offset_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            target_h = int(cfg.set_win_size)
+        except Exception:
+            target_h = 1080
+        if geo_height == target_h:
+            cls._content_offset_cache[key] = 0
+            return 0
+
+        heuristic = cls._heuristic_offset(geo_height)
+        if img is None:
+            return heuristic
+
+        try:
+            import cv2
+            import numpy as np
+
+            scale = target_h / 1440.0
+            gray = np.asarray(img.convert("L"))
+        except Exception as e:
+            log.debug(f"内容区偏移探测预处理失败: {e}")
+            return heuristic
+
+        candidates = sorted({0, heuristic})
+        scored = []
+        for off in candidates:
+            if off >= geo_height:
+                continue
+            sub = gray[off:, :]
+            score = 0.0
+            for tpl_path in (
+                "assets/images/default/share/home/enkephalin_box_assets.png",
+                "assets/images/default/share/home/drive_assets.png",
+            ):
+                tpl = cv2.imread(tpl_path, cv2.IMREAD_GRAYSCALE)
+                if tpl is None:
+                    continue
+                t = cv2.resize(tpl, None, fx=scale, fy=scale)
+                if t.shape[0] >= sub.shape[0] or t.shape[1] >= sub.shape[1]:
+                    continue
+                res = cv2.matchTemplate(sub, t, cv2.TM_CCOEFF_NORMED)
+                _, mx, _, _ = cv2.minMaxLoc(res)
+                score = max(score, mx)
+            scored.append((score, off))
+        best_score, best_off = max(scored, default=(0.0, 0))
+        if best_score > 0.6:
+            cls._content_offset_cache[key] = best_off
+            log.debug(f"内容区偏移探测: {geo_width}x{geo_height} -> {best_off} (相似度 {best_score:.2f})")
+            return best_off
+        return heuristic
+
+    @classmethod
+    def take_screenshot_x11(cls, gray: bool = True, handle: object | None = None) -> Image.Image:
+        """针对 Gamescope 嵌套会话或普通 X11 客户端窗口，直接通过 ZPixmap 协议抓取裸像素缓冲区并转换。
+
+        规避根窗口 BadMatch 异常：直接在目标 Client Window (Drawable) 上调用 get_image。
+        支持 PIL.Image 零拷贝快速转换，保持截图只读无副作用。
+        """
+        if handle is None:
+            handle = screen.handle
+        if getattr(handle, "hwnd", 0) == 0:
+            raise RuntimeError("未找到游戏窗口句柄")
+
+        from Xlib import X
+
+        lock = getattr(handle, "lock", None)
+        with lock if lock is not None else nullcontext():
+            drawable = getattr(handle, "drawable", None)
+            if drawable is None:
+                drawable = getattr(handle, "window", None)
+            if drawable is None:
+                raise RuntimeError("未找到游戏窗口对象")
+            geo = drawable.get_geometry()
+            width, height, depth = geo.width, geo.height, geo.depth
+            if width <= 0 or height <= 0:
+                raise ValueError(f"无效的窗口几何尺寸: {width}x{height}")
+            if depth not in (24, 32):
+                raise ValueError(f"不支持的窗口颜色深度: {depth}")
+
+            raw_ximage = drawable.get_image(0, 0, width, height, X.ZPixmap, 0xFFFFFFFF)
+            if raw_ximage is None or getattr(raw_ximage, "data", None) is None:
+                raise RuntimeError("ZPixmap 抓取返回空缓冲区")
+
+            raw_data = raw_ximage.data
+
+        pil_img = Image.frombuffer("RGB", (width, height), raw_data, "raw", "BGRX", 0, 1)
+
+        offset = cls._resolve_content_offset(width, height, img=pil_img)
+        if offset > 0:
+            pil_img = pil_img.crop((0, offset, width, height))
+        if gray:
+            return pil_img.convert("L")
+        return pil_img
+
+    @staticmethod
+    def take_screenshot_mss(gray: bool = True) -> Image.Image:
+        """全屏捕获后按窗口区域裁剪（Linux 下替代 GDI BitBlt 方案）"""
+        import mss
+        import mss.tools
+
+        monitor = screen.handle.monitor_info["Monitor"]
+        left, top, right, bottom = monitor
+        width, height = right - left, bottom - top
+        if width <= 0 or height <= 0:
+            raise ValueError(f"无效的显示器区域: {monitor}")
+
+        with mss.mss() as sct:
+            raw = sct.grab({"left": left, "top": top, "width": width, "height": height})
+            image = Image.frombytes("RGB", raw.size, raw.rgb)
+
+        if gray:
+            image = image.convert("L")
+
+        win_left, win_top, win_right, win_bottom = screen.handle.rect(True)
+        crop_box = (
+            max(win_left - left, 0),
+            max(win_top - top, 0),
+            min(win_right - left, image.width),
+            min(win_bottom - top, image.height),
+        )
+        image = image.crop(crop_box)
+        return image
 
     @staticmethod
     def take_screenshot_gdi(gray: bool = True) -> Image.Image:
@@ -154,8 +390,9 @@ class ScreenShot:
             except:
                 pass"""
 
-        # 设置进程的DPI感知，以确保截图在不同DPI设置下正确显示
-        windll.user32.SetProcessDPIAware()
+        if IS_WINDOWS:
+            # 设置进程的DPI感知，以确保截图在不同DPI设置下正确显示
+            windll.user32.SetProcessDPIAware()
         # 进行全屏截图
         screenshot_temp = pyautogui.screenshot()
         if gray:
@@ -243,7 +480,7 @@ class ScreenShot:
             try:
                 _, pid = win32process.GetWindowThreadProcessId(screen.handle.hwnd)
                 os.system(f"taskkill /F /PID {pid}")
-            except:
+            except Exception:
                 pass
             from tasks.base.script_task_scheme import init_game
 
@@ -363,3 +600,6 @@ class ScreenShot:
         if gray:
             image = image.convert("L")
         return image
+
+
+X11Screenshot = ScreenShot

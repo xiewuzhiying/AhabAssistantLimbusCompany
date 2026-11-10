@@ -1,8 +1,6 @@
 from datetime import datetime, timedelta
 from time import monotonic
 
-import win32con
-import win32gui
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -15,10 +13,12 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import CheckBox, qconfig
 
 from module.automation import auto
+from module.cancellation import sleep
 from module.config import cfg
 from module.game_and_screen import screen
 from module.logger import log
 from module.my_error.my_error import userStopError
+from module.platform_compat import IS_WINDOWS
 from tasks.base.back_init_menu import back_init_menu
 from tasks.base.make_enkephalin_module import (
     get_current_enkephalin,
@@ -42,14 +42,32 @@ class ProductionWork(QThread):
         super().__init__(parent)
         self.production_running = True
         self.kill_game = kill_game
+        self._restore_window = IS_WINDOWS and cfg.set_reduce_miscontact and not cfg.simulator
         self._init_retry_count = 0
         self._last_back_init_restart_time = 0.0
 
     def stop(self):
         """停止工作线程"""
         self.production_running = False
+        self.requestInterruption()
+
+    def terminate(self):
+        self.stop()
 
     def run(self):
+        try:
+            self._run()
+        except userStopError:
+            pass
+        except Exception as exc:
+            if not self.isInterruptionRequested():
+                self.error_occurred.emit(f"生产错误: {exc}")
+        finally:
+            if self._restore_window:
+                screen.reset_win(activate=False)
+            auto.clear_img_cache()
+
+    def _run(self):
         """工作线程的主循环"""
         while self.production_running:
             # 首先进行游戏初始化
@@ -75,15 +93,15 @@ class ProductionWork(QThread):
                             f" ({self._init_retry_count}/8): {e}"
                         )
                         self.error_occurred.emit(msg)
-                        self.msleep(wait_seconds * 1000)
+                        sleep(wait_seconds)
                         continue
                 self.error_occurred.emit(f"游戏初始化错误: {str(e)}")
-                self.msleep(2000)
+                sleep(2)
                 return
             try:
                 if self._back_init_menu_with_tool_policy() is False:
                     log.warning("自动换饼返回主界面失败，准备重新初始化后重试")
-                    self.msleep(1000)
+                    sleep(1)
                     continue
                 make_enkephalin_module(cancel=False, skip=False)
                 while not auto.find_element("enkephalin/lunacy_assets.png", take_screenshot=True):
@@ -176,19 +194,8 @@ class ProductionWork(QThread):
         if cfg.simulator:
             return
         try:
-            hwnd = screen.handle.hwnd
-            if hwnd == 0 or not win32gui.IsWindow(hwnd):
-                log.debug("自动换饼跳过窗口置顶恢复：未获取到有效游戏窗口句柄")
-                return
-            win32gui.SetWindowPos(
-                hwnd,  # 目标窗口句柄
-                win32con.HWND_NOTOPMOST,  # 关键参数：取消置顶
-                0,
-                0,
-                0,
-                0,  # 忽略位置和大小（保持原样）
-                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,  # 标志位：不移动、不调整大小
-            )
+            # 通过统一的句柄接口取消置顶（Windows/Linux 实现各自处理）
+            screen.handle.set_topmost(False)
         except Exception as e:
             self.error_occurred.emit(f"窗口设置错误: {str(e)}")
 
@@ -199,6 +206,7 @@ class ProductionModule(QWidget):
         super().__init__()
 
         self.worker = None
+        self._closing = False
 
         # 关闭时删除自身，不影响其他窗口/应用
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -258,6 +266,8 @@ class ProductionModule(QWidget):
 
     def start_production(self):
         """启动生产工作线程"""
+        if self._closing:
+            return
         if self.worker is None or not self.worker.isRunning():
             self.worker = ProductionWork(self.kill_game_box.isChecked())
             self.worker.finished.connect(self.on_production_finished)
@@ -281,20 +291,18 @@ class ProductionModule(QWidget):
         self.log_text.append("工作线程已停止")
         self.start_stop_button.setText(self.start_msg)
         self.status_label.setText("状态：已停止")
+        self.start_stop_button.setEnabled(True)
+        self.kill_game_box.setDisabled(False)
+        if self._closing:
+            self.close()
 
     def stop_production(self):
-        """停止工作工作线程"""
-        if self.worker.isRunning():
-            self.log_text.append("中止：等待工作线程停止...")
+        """Request stop; retain the worker and disabled controls until finished."""
+        if self.worker and self.worker.isRunning() and not self.worker.isInterruptionRequested():
             self.worker.stop()
-            self.worker.wait(1000)  # 等待1秒
-            if self.worker.isRunning():
-                self.worker.terminate()
-                self.worker.wait(1000)
-            self.kill_game_box.setDisabled(False)
-            if cfg.set_reduce_miscontact and not cfg.simulator:
-                screen.reset_win()
-            auto.clear_img_cache()
+            self.start_stop_button.setEnabled(False)
+            self.status_label.setText("状态：正在停止…")
+            self.log_text.append("中止：等待工作线程停止...")
 
     def toggle_production(self):
         """切换生产状态"""
@@ -332,20 +340,10 @@ class ProductionModule(QWidget):
         log.info(f"生产等待: 下一次体力回复时间: {next_time} s，下一次执行模块生产等待时间: {waiting_time} s")
 
     def closeEvent(self, event):
-        """窗口关闭时停止所有定时器和工作线程"""
-        # 停止工作线程
-        if hasattr(self, "worker") and self.worker:
-            self.worker.stop()
-            self.worker.wait(3000)  # 等待最多3秒
-            if self.worker.isRunning():
-                self.worker.terminate()
-
-        # 资源清理
+        self._closing = True
         if self.worker is not None and self.worker.isRunning():
-            try:
-                if cfg.set_reduce_miscontact and not cfg.simulator:
-                    screen.reset_win()
-                auto.clear_img_cache()
-            except Exception as e:
-                log.error(f"关闭自动换饼窗口时清理失败: {e}")
+            self.stop_production()
+            self.hide()
+            event.ignore()
+            return
         event.accept()

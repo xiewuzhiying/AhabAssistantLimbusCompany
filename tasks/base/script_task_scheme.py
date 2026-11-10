@@ -1,17 +1,15 @@
-import platform
 import random
 from datetime import datetime
-from threading import Event
-from time import sleep, time
+from threading import Event, Lock
+from time import time
 
-import win32api
-import win32con
 from playsound3 import playsound
 from PySide6.QtCore import QT_TRANSLATE_NOOP, QMutex, QThread
 
 from app import mediator
-from app.windows_toast import TemplateToast, send_toast
+from app.notification import TemplateToast, send_toast
 from module.automation import auto
+from module.cancellation import checkpoint, sleep
 from module.config import TeamSetting, cfg
 from module.decorator.decorator import begin_and_finish_time_log
 from module.game_and_screen import game_process, screen
@@ -29,6 +27,7 @@ from module.my_error.my_error import (
     withOutGameWinError,
     withOutPicError,
 )
+from module.platform_compat import IS_LINUX, IS_WINDOWS
 from module.system_actions import (
     apply_power_keep_awake,
     execute_after_completion,
@@ -102,6 +101,8 @@ def onetime_mir_process(team_setting: TeamSetting, team_num: int):
             return True
         else:
             return False
+    except userStopError:
+        raise
     except Exception as e:
         log.exception(f"镜牢行动出错: {e}")
         return False
@@ -125,9 +126,10 @@ def to_get_reward():
 
 
 def init_game():
+    checkpoint()
     log.debug("初始化游戏")
     if cfg.simulator:
-        if cfg.simulator_type == 0:
+        if cfg.simulator_type == 0 and IS_WINDOWS:
             mumu_instance_number = 0
             if cfg.simulator_port == 0 and cfg.mumu_instance_number == -1:
                 log.info("未设置模拟器端口或实例编号，使用默认mumu模拟器")
@@ -158,7 +160,7 @@ def init_game():
             SimulatorControl()
     auto.init_input()
     if cfg.simulator:
-        if cfg.simulator_type == 0:
+        if cfg.simulator_type == 0 and IS_WINDOWS:
             from module.automation.input_handlers.simulator.mumu_control import (
                 MumuControl,
             )
@@ -171,6 +173,15 @@ def init_game():
 
             SimulatorControl.connection_device.start_game()
     else:
+        if IS_LINUX:
+            # Linux/Proton 的启动链可能在数秒后才出现进程；由
+            # screen.init_handle() 统一负责首次启动，避免这里先启动一次、
+            # init_handle() 再因暂时看不到进程而重复拉起 Steam。
+            if not screen.init_handle():
+                raise withOutGameWinError("WINDOW_NOT_READY: 启动失败，请检查 Linux 环境诊断后重试")
+            if cfg.set_windows:
+                screen.set_win()
+            return
         game_process.start_game()
         while not screen.init_handle():
             sleep(10)
@@ -179,8 +190,11 @@ def init_game():
 
 
 def _warn_if_game_monitor_hdr_enabled() -> None:
-    if cfg.simulator or not bool(cfg.get_value("experimental_hdr_warning", True)):
+    if not IS_WINDOWS or cfg.simulator or not bool(cfg.get_value("experimental_hdr_warning", True)):
         return
+
+    import win32api
+    import win32con
 
     hwnd = screen.handle.hwnd
     if not hwnd:
@@ -203,7 +217,8 @@ def _warn_if_game_monitor_hdr_enabled() -> None:
     acknowledged = Event()
     log.warning("检测到游戏所在显示器已开启 HDR，可能导致图像识别问题")
     mediator.hdr_warning.emit(acknowledged)
-    acknowledged.wait()
+    while not acknowledged.wait(.1):
+        checkpoint()
 
 
 def Resonate_with_Ahab():
@@ -213,6 +228,8 @@ def Resonate_with_Ahab():
 
 def _get_game_rendering_scale() -> int | None:
     """读取非模拟器模式下 Limbus 的渲染比例设置。"""
+    if not IS_WINDOWS:
+        return None
     try:
         import json
         import winreg
@@ -303,6 +320,7 @@ def Mirror_task():
     cfg.normalize_and_sync_team_state(persist=False)
     # 开始执行镜牢任务
     while mir_times > 0:
+        checkpoint()
         # 检测配置的队伍能否顺利执行
         useful = False
         hard = bool(cfg.hard_mirror)
@@ -402,6 +420,7 @@ def script_task() -> None | int:
         task_list.append(Mirror_task)
 
     for task in task_list:
+        checkpoint()
         task()
 
     if cfg.set_reduce_miscontact and not cfg.simulator:
@@ -427,10 +446,11 @@ def script_task() -> None | int:
         Resonate_with_Ahab()
 
     should_exit_aalc = False
-    if platform.system() == "Windows":
+    if IS_WINDOWS or IS_LINUX:
         # 收尾动作可能主动关闭游戏或模拟器。先停止截图监控，避免设备消失
         # 被误判为断链并触发自动恢复，重新拉起刚关闭的模拟器。
         retry_monitor.stop()
+        checkpoint()
         actions, power_action = get_after_completion_config()
         try:
             should_exit_aalc = execute_after_completion(actions, power_action)
@@ -438,7 +458,7 @@ def script_task() -> None | int:
             log.exception("脚本结束后的操作失败")
 
     if cfg.simulator:
-        if cfg.simulator_type == 0:
+        if cfg.simulator_type == 0 and IS_WINDOWS:
             from module.automation.input_handlers.simulator.mumu_control import (
                 MumuControl,
             )
@@ -454,6 +474,11 @@ class my_script_task(QThread):
         # 初始化，构造函数
         super().__init__()
         self.mutex = QMutex()
+        self.native = IS_LINUX and not cfg.simulator
+        self.exit_requested = False
+        self._session_stop = None
+        self._stop_lock = Lock()
+        self._finishing = False
 
     def run(self):
         self.mutex.lock()
@@ -478,18 +503,55 @@ class my_script_task(QThread):
             self.exception = e
             log.exception("脚本线程执行失败")
         finally:
-            retry_monitor.stop()
-            self.mutex.unlock()
+            with self._stop_lock:
+                self._finishing = True
+                session_stop = self._session_stop
+            retry_monitor.request_stop()
+            try:
+                if self.native:
+                    if session_stop is not None:
+                        session_stop.join()
+                    game_process.kill_game()
+                elif self.isInterruptionRequested():
+                    self._restore_after_stop()
+            finally:
+                try:
+                    # A blocked monitor remains owned until it has unwound. A new
+                    # task must not reuse its locks or input session meanwhile.
+                    retry_monitor.stop(timeout=None)
+                finally:
+                    self.mutex.unlock()
+
+    def request_stop(self):
+        """Only signal cancellation here; GUI callers must never wait for I/O."""
+        with self._stop_lock:
+            if self.isInterruptionRequested():
+                return
+            self.requestInterruption()
+            retry_monitor.request_stop()
+            auto.resume_interactions()
+            if self.native and not self._finishing:
+                from module.game_and_screen.gamescope_launcher import GamescopeLauncher
+                # Closing our display also releases workers stuck in X11 round trips.
+                self._session_stop = GamescopeLauncher().terminate_async()
 
     def terminate(self):
-        retry_monitor.stop()
-        super().terminate()
-        # TerminateThread 不会释放被杀线程持有的 RLock,换新锁防止后续任务取锁永久阻塞
-        auto.reset_safety_locks()
+        # Compatibility for older callers; completion is signalled by finished.
+        self.request_stop()
 
-    """def stop(self):
-        self.running=False
-        self.finished_signal.emit()"""
+    def _restore_after_stop(self):
+        try:
+            if cfg.simulator:
+                if cfg.simulator_type == 0 and IS_WINDOWS:
+                    from module.automation.input_handlers.simulator.mumu_control import MumuControl
+                    MumuControl.clean_connect()
+                else:
+                    from module.automation.input_handlers.simulator.simulator_control import SimulatorControl
+                    SimulatorControl.clean_connect()
+            elif cfg.set_reduce_miscontact:
+                screen.reset_win(activate=False)
+        except Exception:
+            log.exception("停止任务后恢复窗口或连接失败")
 
     def _run(self):
         keep_awake_enabled = bool(cfg.get_value("experimental_keep_screen_awake", False))
@@ -497,8 +559,7 @@ class my_script_task(QThread):
             if keep_awake_enabled:
                 apply_power_keep_awake(True)
             ret = script_task()
-            if ret == 0:
-                mediator.kill_signal.emit()
+            self.exit_requested = ret == 0
         finally:
             if keep_awake_enabled:
                 # 先切回 AALC 再释放线程级防息屏，避免游戏仍持有前台时继续阻止息屏。

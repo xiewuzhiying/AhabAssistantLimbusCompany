@@ -1,6 +1,7 @@
-from time import monotonic, sleep
+from time import monotonic
 
 from module.automation import auto
+from module.cancellation import sleep
 from module.decorator.decorator import begin_and_finish_time_log
 from module.logger import log
 from tasks.base import update_model_for_retry

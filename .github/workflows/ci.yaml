@@ -54,12 +54,20 @@ jobs:
           python scripts/ci_version.py \
             --channel "${{ steps.channel.outputs.channel }}" \
             --repo "${{ github.repository }}" \
+            --releases-repo KIYI671/AhabAssistantLimbusCompany \
             --workflow-file "ci.yaml" \
             --current-run-id "${{ github.run_id }}" \
             --current-run-number "${{ github.run_number }}"
 
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONPATH: .
     steps:
       - name: Checkout
         uses: actions/checkout@main
@@ -70,6 +78,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: |
             **/uv.lock
+
+      - name: Linux GUI runtime dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -87,6 +99,7 @@ jobs:
   publish-prerelease:
     name: Publish prerelease
     if: >-
+      github.repository == 'KIYI671/AhabAssistantLimbusCompany' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest

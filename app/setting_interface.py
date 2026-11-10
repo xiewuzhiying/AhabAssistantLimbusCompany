@@ -1,7 +1,6 @@
 import datetime
 
-from PySide6.QtCore import QT_TRANSLATE_NOOP, QPoint, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QT_TRANSLATE_NOOP, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -563,6 +562,12 @@ class SettingInterface(QWidget):
         self.expand_layout.addWidget(self.theme_pack_group)
         self.expand_layout.addWidget(self.simulator_setting_group)
         self.expand_layout.addWidget(self.game_path_group)
+        from module.platform_compat import IS_LINUX
+        if IS_LINUX:
+            from app.linux_setup import LinuxControls
+            self.linux_controls = LinuxControls(self.scroll_widget)
+            self.linux_controls.adjustSize()
+            self.expand_layout.addWidget(self.linux_controls)
         self.expand_layout.addWidget(self.autodaily_group)
         self.expand_layout.addWidget(self.personal_group)
         self.expand_layout.addWidget(self.update_group)
@@ -672,7 +677,9 @@ class SettingInterface(QWidget):
     def __onOpenLogsCardClicked(self):
         import os
 
-        os.startfile(os.path.abspath("./logs"))
+        from module.platform_compat import open_path
+
+        open_path(os.path.abspath("./logs"))
 
     def __onScreenshotBenchmarkCardClicked(self):
         from module.automation.screenshot import ScreenShot
@@ -750,7 +757,12 @@ class SettingInterface(QWidget):
             helper.unregister_task(TASK_NAME)
 
     def __openUrl(self, url):
-        return lambda: QDesktopServices.openUrl(QUrl(url))
+        def open_url():
+            from module.platform_compat import open_url as open_external_url
+
+            open_external_url(url)
+
+        return open_url
 
     def __onThemePackCardClicked(self):
         """打开主题包权重配置对话框"""

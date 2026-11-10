@@ -23,6 +23,7 @@ dist_release
 *.dll
 !3rdparty/PaddleOCR-json_v1.4.1/*.dll
 build.bat
+build.sh
 config_backup
 config.yaml*
 theme_pack_list.yaml
@@ -38,3 +39,6 @@ __main_dev_temp__.py
 
 # 其他
 .worktrees
+.direnv
+result
+result*

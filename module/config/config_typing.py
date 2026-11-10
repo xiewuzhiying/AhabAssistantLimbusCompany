@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -206,6 +206,14 @@ class TeamSetting(BaseModel):
 
 class ConfigModel(BaseModel):
     """配置模型"""
+
+    steam_root: str
+    custom_game_path: str
+    proton_path: str
+    slr_entrypoint: str
+    compat_data_path: str
+    gamescope_display: str
+    graphics_api: Literal["auto", "d3d11", "d3d12"]
 
     config_version: int
     """配置文件版本号（时间戳）"""

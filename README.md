@@ -19,7 +19,7 @@
 </div>
 <div>
     <img alt="language" src="https://img.shields.io/badge/Language-Python-blue">
-    <img alt="platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square&color=4096d8">
+    <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square&color=4096d8">
 </div>
 
 **简体中文** | [English](assets/doc/en/README_EN.md)
@@ -78,11 +78,14 @@
 
 因为技术力不足，还搞了GUI和使用第三方OCR，所以导致文件比较大
 
-**注意**：Release基于x86_64架构，Windows系统。对于Arm架构（如苹果M系列芯片，树莓派等），RISCV架构和Mac系统，Linux系统暂不支持。如果需要在非支持的平台上运行AALC请参考**源码运行**和**构建指南**章节进行操作。也欢迎作为开发者提交PR进行多平台适配。未来根据用户需求也许会添加多平台的Release版本支持。
+**注意**：Release基于x86_64架构，Windows系统。对于Arm架构（如苹果M系列芯片，树莓派等）和RISCV架构暂不支持。
 
----
+### Linux 支持
 
-## 使用说明
+Linux x86_64 原生游戏模式通过 Gamescope 隔离运行，需要 systemd 用户会话和原生 Steam/Proton。提供源码运行入口、独立游戏配置、环境诊断及设置页只读预览；NixOS、Arch 系和 Debian 系安装说明见 [Linux 使用指南](docs/linux-usage.md)。首次使用请先在 Steam 正常启动一次游戏并退出。
+
+本轮不提供 Linux 二进制包，也不支持 Flatpak Steam 或非 systemd 会话。Linux ADB 模拟器模式仍属于未经真实设备完整验收的路径。Windows 用户的启动方式不变。
+
 
 ### [堂吉诃德都能学会的操作方法](/assets/doc/zh/How_to_use.md)
 

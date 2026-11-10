@@ -13,6 +13,8 @@ import numpy as np
 import psutil
 from PIL.Image import Image
 
+from module.cancellation import checkpoint, sleep
+from module.my_error.my_error import userStopError
 from utils.image_utils import ImageUtils
 from utils.path_manager import path_manager
 from utils.singletonmeta import SingletonMeta
@@ -20,7 +22,8 @@ from utils.singletonmeta import SingletonMeta
 from ..config import cfg
 from ..logger import log
 from ..ocr import ocr
-from .input_handlers.input import AbstractInput
+from ..platform_compat import IS_WINDOWS
+from .input_handlers import AbstractInput
 from .screenshot import ScreenShot
 
 # ponytail: 交互门最长关闭时间。监控线程卡在持久弹窗上时,超时放行业务输入,
@@ -64,20 +67,25 @@ class Automation(metaclass=SingletonMeta):
         if self.input_handler:
             self.input_handler = None
         if cfg.simulator:
-            if cfg.simulator_type == 0:
+            if cfg.simulator_type == 0 and IS_WINDOWS:
                 from .input_handlers.simulator.mumu_control import MumuControl
 
                 log.debug("使用MuMu模拟器输入模块")
                 if MumuControl.connection_device is not None:
                     self.input_handler = MumuControl.connection_device
             else:
+                # Linux 下 MuMu 专属 IPC 不可用，与其他模拟器一样走 ADB 通道
                 from .input_handlers.simulator.simulator_control import SimulatorControl
 
                 log.debug("使用基于PyMiniTouch的通用模拟器输入模块")
                 self.input_handler = SimulatorControl.connection_device
         else:
             input_type = cfg.win_input_type
-            if input_type == "background":
+            if not IS_WINDOWS:
+                from .input_handlers.gamescope_input import GamescopeXTestInput
+
+                self.input_handler = GamescopeXTestInput()
+            elif input_type == "background":
                 from .input_handlers.input import BackgroundInput
 
                 log.debug("使用后台点击模块")
@@ -93,9 +101,14 @@ class Automation(metaclass=SingletonMeta):
                 log.debug("使用基于窗口移动的后台点击模块")
                 self.input_handler = WindowMoveInput()
         if self.input_handler is None:
-            from .input_handlers.input import BackgroundInput
+            if IS_WINDOWS:
+                from .input_handlers.input import BackgroundInput
 
-            self.input_handler = BackgroundInput()
+                self.input_handler = BackgroundInput()
+            else:
+                from .input_handlers.gamescope_input import GamescopeXTestInput
+
+                self.input_handler = GamescopeXTestInput()
         assert isinstance(self.input_handler, AbstractInput), "输入处理器必须是AbstractInput的实例"
         self.set_pause = self.input_handler.set_pause
         self.wait_pause = self.input_handler.wait_pause
@@ -134,6 +147,13 @@ class Automation(metaclass=SingletonMeta):
         """
         self._input_lock = threading.RLock()
         self._screenshot_lock = threading.RLock()
+        if not IS_WINDOWS:
+            try:
+                from module.game_and_screen.x11_handle import reset_serialization_lock
+
+                reset_serialization_lock()
+            except ImportError:
+                pass
 
     def _run_business_interaction(self, method_name: str):
         """在交互门放行且取得输入锁后执行一次业务输入。
@@ -145,8 +165,16 @@ class Automation(metaclass=SingletonMeta):
 
         def wrapper(*args, **kwargs):
             while True:
-                gate_open = self._interaction_gate.wait(timeout=GATE_WAIT_TIMEOUT)
+                checkpoint()
+                deadline = time.monotonic() + GATE_WAIT_TIMEOUT
+                while not self._interaction_gate.wait(timeout=0.1):
+                    checkpoint()
+                    if time.monotonic() >= deadline:
+                        break
+                gate_open = self._interaction_gate.is_set()
+                checkpoint()
                 with self._input_lock:
+                    checkpoint()
                     if gate_open and self._interaction_gate.is_set():
                         method = getattr(self.input_handler, method_name)
                         return method(*args, **kwargs)
@@ -157,10 +185,13 @@ class Automation(metaclass=SingletonMeta):
 
         return wrapper
 
-    def monitor_mouse_click(self, x, y, times=1):
+    def monitor_mouse_click(self, x, y, times=1, *, cancelled=lambda: False):
         """由系统监控线程点击，不等待该监控线程设置的互斥门。"""
         with self._input_lock:
-            return self.input_handler.mouse_click(x, y, times=times)
+            if cancelled():
+                return False
+            self.input_handler.mouse_click(x, y, times=times)
+            return True
 
     def _remember_screenshot(self, screenshot: Image | None) -> None:
         if screenshot is None:
@@ -190,6 +221,7 @@ class Automation(metaclass=SingletonMeta):
             return screenshot
 
     def check_pause(self) -> bool:
+        checkpoint()
         """
         检查是否处于暂停状态
 
@@ -343,6 +375,7 @@ class Automation(metaclass=SingletonMeta):
         return True
 
     def take_screenshot(self, gray: bool = True) -> Image | None:
+        checkpoint()
         """
         截取当前屏幕并返回图像对象。
         Args:
@@ -353,16 +386,19 @@ class Automation(metaclass=SingletonMeta):
         start_time = time.time()
         screenshot_interval_time = cfg.screenshot_interval if cfg.screenshot_interval else 0.85
         while True:
+            checkpoint()
             try:
                 if time.time() - self.last_screenshot_time < screenshot_interval_time:
                     wait_time = max(
                         screenshot_interval_time - (time.time() - self.last_screenshot_time),
                         0,
                     )
-                    time.sleep(wait_time)
+                    sleep(wait_time)
 
                 with self._screenshot_lock:
+                    checkpoint()
                     result = ScreenShot.take_screenshot(gray)
+                    checkpoint()
                     self._remember_screenshot(result)
                 if result:
                     self.screenshot = result
@@ -370,21 +406,27 @@ class Automation(metaclass=SingletonMeta):
                     return result
                 else:
                     return None
+            except userStopError:
+                raise
             except Exception as e:
+                checkpoint()
                 log.error(f"截图失败:{e}")
-            time.sleep(1)
+            sleep(1)
             if time.time() - start_time > 60:
                 log.error("截图超时，尝试重启游戏")
-                import os
-
-                import win32process
-
                 from module.game_and_screen import screen
+                from module.platform_compat import IS_WINDOWS, kill_pid
 
                 try:
-                    _, pid = win32process.GetWindowThreadProcessId(screen.handle.hwnd)
-                    os.system(f"taskkill /F /PID {pid}")
-                except:
+                    if IS_WINDOWS:
+                        import win32process
+
+                        _, pid = win32process.GetWindowThreadProcessId(screen.handle.hwnd)
+                    else:
+                        pid = screen.handle.pid
+                    if pid:
+                        kill_pid(pid)
+                except Exception:
                     pass
                 from tasks.base.script_task_scheme import init_game
 
@@ -531,6 +573,11 @@ class Automation(metaclass=SingletonMeta):
         return False
 
     def _run_ocr_for_text(self, my_crop=None, only_text=False, additional_stack=0):
+        if self.screenshot is None:
+            self.take_screenshot()
+        if self.screenshot is None:
+            return False if only_text else {}
+
         if my_crop is not None:
             cropped_image = self.screenshot.crop(my_crop)
             ocr_result = ocr.run(cropped_image)
@@ -641,6 +688,11 @@ class Automation(metaclass=SingletonMeta):
         """
         从屏幕截图中提取文字
         """
+        if self.screenshot is None:
+            self.take_screenshot()
+        if self.screenshot is None:
+            return []
+
         if my_crop is not None:
             # 根据my_crop（为左上与右下四个坐标），截取self.screenshot的部分区域进行ocr
             cropped_image = self.screenshot.crop(my_crop)
@@ -708,7 +760,7 @@ class Automation(metaclass=SingletonMeta):
             return result
         except Exception as e:
             error_message = str(e)
-            if "cv::flann" in error_message:
+            if "cv::flann" in error_message or "randShuffle" in error_message or "knnMatch" in error_message:
                 pass
             else:
                 log.error(f"匹配图片特征失败:{e}")
@@ -823,6 +875,10 @@ class Automation(metaclass=SingletonMeta):
                 if current_percent > 90:
                     log.debug(f"当前系统内存总占用率: {current_percent}%，释放图片缓存")
                     self.clear_img_cache()
+
+            if self.screenshot is None:
+                log.error("尚未截图，无法识别图片（请先执行 take_screenshot）")
+                return None
 
             existing_paths = ImageUtils.existing_image_paths(target)
             if not existing_paths:

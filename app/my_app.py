@@ -1,7 +1,6 @@
 import ctypes
 import os
 import re
-import subprocess
 import sys
 from enum import Enum
 
@@ -92,6 +91,12 @@ class MainWindow(FramelessWindow):
     def __init__(self, argv: list[str]):
         super().__init__()
 
+        self._closing = False
+        self._completion_exit_requested = False
+        self._shutdown_cleanup = None
+        self._close_timer = QTimer(self)
+        self._close_timer.setInterval(100)
+        self._close_timer.timeout.connect(self.close)
         self._pending_start_commands: list[list[str]] = []
         self._scheduled_start_pending = False
         self._scheduled_start_command: list[str] | None = None
@@ -331,6 +336,8 @@ class MainWindow(FramelessWindow):
 
     def command_start(self, argv: list[str]):
         """通过命令行参数控制程序启动行为"""
+        if self._closing:
+            return
         # 初始化控制符
         log.debug(f"接收到命令行参数: {argv}")
         if self._is_start_command(argv) and (self._has_running_script() or self._scheduled_start_pending):
@@ -342,6 +349,27 @@ class MainWindow(FramelessWindow):
             )
             return
 
+        if sys.platform.startswith('linux') and '--native-profile' in argv:
+            try:
+                from app.linux_setup import apply_selection
+                profile = argv[argv.index('--native-profile') + 1]
+                api = argv[argv.index('--native-api') + 1]
+                if self._has_running_script():
+                    raise RuntimeError('SESSION_BUSY: 任务运行中不能切换配置')
+                apply_selection(profile, api, None if '--skip-setup' in argv else self)
+                return True
+            except (ValueError, IndexError, RuntimeError, OSError) as exc:
+                from PySide6.QtWidgets import QMessageBox
+                if '--skip-setup' in argv:
+                    log.error(str(exc))
+                else:
+                    QMessageBox.warning(self, 'Linux 配置请求失败', str(exc))
+            return
+        if sys.platform.startswith('linux') and '--native-preview' in argv:
+            from app.linux_setup import Preview
+            self._native_preview = Preview(self)
+            self._native_preview.show()
+            return
         skip_arg_times = 0
         start_flag = False
         exit_flag = False
@@ -428,6 +456,8 @@ class MainWindow(FramelessWindow):
         return "start" in argv[1:]
 
     def _emit_scheduled_start(self) -> None:
+        if self._closing:
+            return
         if self._has_running_script():
             if self._scheduled_start_command is not None:
                 self._pending_start_commands.insert(0, self._scheduled_start_command)
@@ -456,12 +486,16 @@ class MainWindow(FramelessWindow):
         mediator.completion_suppressed_changed.emit(suspended)
 
     def _schedule_next_queued_start(self) -> None:
+        if self._closing:
+            return
         if self._pending_start_commands:
             QTimer.singleShot(250, self._start_next_queued_command)
         elif not self._scheduled_start_pending:
             self._set_completion_actions_suspended(False)
 
     def _start_next_queued_command(self) -> None:
+        if self._closing:
+            return
         if not self._pending_start_commands:
             return
         if self._has_running_script() or self._scheduled_start_pending:
@@ -492,48 +526,74 @@ class MainWindow(FramelessWindow):
         if hasattr(self, "resource_sync_coordinator"):
             self.resource_sync_coordinator.apply_status_style(is_dark)
 
+    def request_exit(self):
+        """The configured Exit AALC action uses the same drain as manual exit."""
+        self._completion_exit_requested = True
+        self.close()
+
     def closeEvent(self, e):
-        # 保存窗口位置
-        cfg.set_value("window_position_x", self.x())
-        cfg.set_value("window_position_y", self.y())
+        if not self._closing:
+            if not self._completion_exit_requested and (self._has_running_script() or self.tools_interface.tools):
+                if not self.isVisible():
+                    self.showNormal()
+                    self.raise_()
+                    self.activateWindow()
+                message_box = MessageBoxConfirm(
+                    self.tr("有正在进行的任务"),
+                    self.tr("脚本或工具正在运行中，确定要退出程序吗？"),
+                    self.window(),
+                )
+                if not message_box.exec():
+                    e.ignore()
+                    return
+            # Latch once, before signalling workers or processing another event.
+            self._closing = True
+            # Closing a preview/tool can otherwise quit Qt while the tray-hidden
+            # main window is still draining its workers.
+            QApplication.instance().setQuitOnLastWindowClosed(False)
+            self._pending_start_commands.clear()
+            self._scheduled_start_pending = False
+            self._scheduled_start_command = None
+            self._set_completion_actions_suspended(True)
+            self.farming_interface.setEnabled(False)
+            self.tools_interface.setEnabled(False)
+            self.setting_interface.setEnabled(False)
+            self.farming_interface.interface_left.stop_script()
+            cfg.set_value("window_position_x", self.x())
+            cfg.set_value("window_position_y", self.y())
+            self._close_timer.start()
 
-        if (
-            self.farming_interface.interface_left.my_script is not None
-            and self.farming_interface.interface_left.my_script.isRunning()
-        ):
-            # 确保窗口可见，以便正确显示确认对话框
-            if not self.isVisible():
-                self.showNormal()
-                self.raise_()
-                self.activateWindow()
+        pending = self._has_running_script()
+        # A tool may still be queued for construction. Keep its manager alive
+        # and revisit it instead of allowing a late window after application exit.
+        for name, tool in list(self.tools_interface.tools.items()):
+            if name in self.tools_interface._starting_tools or tool.initialized is False:
+                pending = True
+            elif isinstance(tool.w, QWidget):
+                pending = not tool.w.close() or pending
+            elif isinstance(tool.w, QThread) and tool.w.isRunning():
+                tool.w.requestInterruption()
+                pending = True
 
-            message_box = MessageBoxConfirm(
-                self.tr("有正在进行的任务"),
-                self.tr("脚本正在运行中，确定要退出程序吗？"),
-                self.window(),
-            )
-            if message_box.exec():
-                self.farming_interface.interface_left.my_script.terminate()
-            else:
-                e.ignore()
-                return
+        if sys.platform.startswith('linux'):
+            from app.linux_setup import FrameReader, LinuxSetup, Preview, ProfileCopy
+            for dialog in [*self.findChildren(Preview), *self.findChildren(LinuxSetup)]:
+                pending = not dialog.close() or pending
+            for thread in [*self.findChildren(FrameReader), *self.findChildren(ProfileCopy)]:
+                if thread.isRunning():
+                    thread.requestInterruption()
+                    pending = True
 
-        if self.tools_interface.tools:
-            message_box = MessageBoxConfirm(
-                self.tr("有正在运行的工具"),
-                self.tr("有工具正在运行中，确定要退出程序吗？"),
-                self.window(),
-            )
-            if message_box.exec():
-                for tool in self.tools_interface.tools.values():
-                    if isinstance(tool.w, QWidget):
-                        tool.w.close()
-                    elif isinstance(tool.w, QThread):
-                        tool.w.terminate()
-            else:
-                e.ignore()
-                return
-        return super().closeEvent(e)
+        if self._shutdown_cleanup is None:
+            from app.shutdown import ShutdownCleanup
+            self._shutdown_cleanup = ShutdownCleanup(self)
+            self._shutdown_cleanup.start()
+        if pending or not self._shutdown_cleanup.isFinished():
+            e.ignore()
+            return
+        self._close_timer.stop()
+        super().closeEvent(e)
+        QApplication.instance().quit()
 
     def changeEvent(self, event):
         # 监听窗口状态改变事件
@@ -698,9 +758,12 @@ class MainWindow(FramelessWindow):
     def download_and_install(self, file_name):
         messages_box = MessageBoxConfirm(self.tr("更新提醒"), self.tr("下载已经完成，是否开始更新"), self.window())
         if messages_box.exec():
-            source_file = os.path.abspath("./AALC Updater.exe")
+            from module.platform_compat import IS_WINDOWS, start_detached
+
+            updater_name = "AALC Updater.exe" if IS_WINDOWS else "AALC-Updater"
+            source_file = os.path.abspath(f"./{updater_name}")
             assert_name = file_name
-            subprocess.Popen([source_file, assert_name], creationflags=subprocess.DETACHED_PROCESS)
+            start_detached([source_file, assert_name])
 
     def retranslateUi(self):
         self.pivot.setItemText("farming_interface", self.tr("一键长草"))

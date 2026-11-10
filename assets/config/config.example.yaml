@@ -210,3 +210,12 @@ teams:
     mirror_hard_count: 0 # 困难镜牢次数
     total_mirror_time_normal: [] # 普通镜牢总用时
     mirror_normal_count: 0 # 普通镜牢次数
+
+# Optional Linux Gamescope paths and isolated display
+steam_root: ""
+custom_game_path: ""
+proton_path: ""
+slr_entrypoint: ""
+compat_data_path: ""
+gamescope_display: ""
+graphics_api: auto # AALC only: auto, d3d11, d3d12

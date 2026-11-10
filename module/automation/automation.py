@@ -185,10 +185,13 @@ class Automation(metaclass=SingletonMeta):
 
         return wrapper
 
-    def monitor_mouse_click(self, x, y, times=1):
+    def monitor_mouse_click(self, x, y, times=1, *, cancelled=lambda: False):
         """由系统监控线程点击，不等待该监控线程设置的互斥门。"""
         with self._input_lock:
-            return self.input_handler.mouse_click(x, y, times=times)
+            if cancelled():
+                return False
+            self.input_handler.mouse_click(x, y, times=times)
+            return True
 
     def _remember_screenshot(self, screenshot: Image | None) -> None:
         if screenshot is None:

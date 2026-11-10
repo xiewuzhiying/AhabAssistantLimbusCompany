@@ -13,11 +13,12 @@ import numpy as np
 import psutil
 from PIL.Image import Image
 
+from module.cancellation import checkpoint, sleep
+from module.my_error.my_error import userStopError
 from utils.image_utils import ImageUtils
 from utils.path_manager import path_manager
 from utils.singletonmeta import SingletonMeta
 
-from module.cancellation import checkpoint
 from ..config import cfg
 from ..logger import log
 from ..ocr import ocr
@@ -173,6 +174,7 @@ class Automation(metaclass=SingletonMeta):
                 gate_open = self._interaction_gate.is_set()
                 checkpoint()
                 with self._input_lock:
+                    checkpoint()
                     if gate_open and self._interaction_gate.is_set():
                         method = getattr(self.input_handler, method_name)
                         return method(*args, **kwargs)
@@ -381,16 +383,19 @@ class Automation(metaclass=SingletonMeta):
         start_time = time.time()
         screenshot_interval_time = cfg.screenshot_interval if cfg.screenshot_interval else 0.85
         while True:
+            checkpoint()
             try:
                 if time.time() - self.last_screenshot_time < screenshot_interval_time:
                     wait_time = max(
                         screenshot_interval_time - (time.time() - self.last_screenshot_time),
                         0,
                     )
-                    time.sleep(wait_time)
+                    sleep(wait_time)
 
                 with self._screenshot_lock:
+                    checkpoint()
                     result = ScreenShot.take_screenshot(gray)
+                    checkpoint()
                     self._remember_screenshot(result)
                 if result:
                     self.screenshot = result
@@ -398,9 +403,12 @@ class Automation(metaclass=SingletonMeta):
                     return result
                 else:
                     return None
+            except userStopError:
+                raise
             except Exception as e:
+                checkpoint()
                 log.error(f"截图失败:{e}")
-            time.sleep(1)
+            sleep(1)
             if time.time() - start_time > 60:
                 log.error("截图超时，尝试重启游戏")
                 from module.game_and_screen import screen

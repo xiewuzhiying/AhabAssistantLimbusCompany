@@ -1,6 +1,7 @@
-from module.cancellation import sleep
 from typing import TYPE_CHECKING, overload
 
+from module.cancellation import checkpoint, sleep
+from module.my_error.my_error import userStopError
 from module.platform_compat import IS_WINDOWS
 
 if IS_WINDOWS:
@@ -386,6 +387,7 @@ class Screen(metaclass=SingletonMeta):
         self.handle = create_handle()
 
     def init_handle(self) -> bool:
+        checkpoint()
         try:
             self.handle.init_handle(self.title)
             if self.handle.hwnd == 0:
@@ -420,6 +422,8 @@ class Screen(metaclass=SingletonMeta):
                     except Exception as e:
                         log.debug(f"重新初始化输入模块失败: {e}")
                 return True
+        except userStopError:
+            raise
         except Exception as e:
             log.error(f"未能获取到游戏窗口: {e}")
             return False

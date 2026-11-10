@@ -2,7 +2,6 @@ import random
 from datetime import datetime
 from threading import Event
 from time import time
-from module.cancellation import sleep
 
 from playsound3 import playsound
 from PySide6.QtCore import QT_TRANSLATE_NOOP, QMutex, QThread
@@ -10,6 +9,7 @@ from PySide6.QtCore import QT_TRANSLATE_NOOP, QMutex, QThread
 from app import mediator
 from app.notification import TemplateToast, send_toast
 from module.automation import auto
+from module.cancellation import checkpoint, sleep
 from module.config import TeamSetting, cfg
 from module.decorator.decorator import begin_and_finish_time_log
 from module.game_and_screen import game_process, screen
@@ -101,6 +101,8 @@ def onetime_mir_process(team_setting: TeamSetting, team_num: int):
             return True
         else:
             return False
+    except userStopError:
+        raise
     except Exception as e:
         log.exception(f"镜牢行动出错: {e}")
         return False
@@ -124,6 +126,7 @@ def to_get_reward():
 
 
 def init_game():
+    checkpoint()
     log.debug("初始化游戏")
     if cfg.simulator:
         if cfg.simulator_type == 0 and IS_WINDOWS:
@@ -214,7 +217,8 @@ def _warn_if_game_monitor_hdr_enabled() -> None:
     acknowledged = Event()
     log.warning("检测到游戏所在显示器已开启 HDR，可能导致图像识别问题")
     mediator.hdr_warning.emit(acknowledged)
-    acknowledged.wait()
+    while not acknowledged.wait(.1):
+        checkpoint()
 
 
 def Resonate_with_Ahab():
@@ -316,6 +320,7 @@ def Mirror_task():
     cfg.normalize_and_sync_team_state(persist=False)
     # 开始执行镜牢任务
     while mir_times > 0:
+        checkpoint()
         # 检测配置的队伍能否顺利执行
         useful = False
         hard = bool(cfg.hard_mirror)
@@ -415,6 +420,7 @@ def script_task() -> None | int:
         task_list.append(Mirror_task)
 
     for task in task_list:
+        checkpoint()
         task()
 
     if cfg.set_reduce_miscontact and not cfg.simulator:

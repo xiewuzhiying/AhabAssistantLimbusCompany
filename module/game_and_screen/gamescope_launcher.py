@@ -1,20 +1,21 @@
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
-import threading
 import tempfile
-import shlex
+import threading
 import time
 from pathlib import Path
 from time import sleep
-from module.native_linux import load_settings
 from typing import Callable, Optional
 
-from module.game_and_screen.managed_session import ManagedSession
+from module.cancellation import checkpoint
 from module.config import cfg
+from module.game_and_screen.managed_session import ManagedSession
 from module.logger import log
+from module.native_linux import load_settings
 from utils.singletonmeta import SingletonMeta
 
 LIMBUS_APP_ID = "1973530"
@@ -566,6 +567,7 @@ class GamescopeLauncher(metaclass=SingletonMeta):
 
     def launch(self) -> bool:
         with self._lifecycle_lock:
+            checkpoint()
             return self._launch_locked()
 
     def _launch_locked(self) -> bool:

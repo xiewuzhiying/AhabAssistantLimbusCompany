@@ -152,6 +152,40 @@ def test_defense_intent_survives_a_missed_planning_control():
     assert state.remaining_turns == 5
 
 
+@pytest.mark.parametrize('mode', ['limited', 'first'])
+def test_focused_battle_starts_with_chain_only_defense_enabled(mode):
+    # Resuming a dungeon creates a fresh defense budget, possibly at a focused
+    # encounter. Its right submit gear is visible, but the chain anchor is not.
+    ui = BattleUI(accepted_after=1)
+    find = ui.find_element
+    ui.find_element = lambda name, **kwargs: (
+        False if name.endswith('gear_left.png') else find(name, **kwargs)
+    )
+    battle, state_type = load_battle(ui)
+    state = state_type() if mode == 'limited' else None
+
+    assert operate(battle, state, first=mode == 'first') is False
+
+    assert ui.keys == ['p', 'enter']
+    assert ui.playing
+    battle._defense_this_round.assert_not_called()
+    assert not battle._defense_selection_pending
+    if state:
+        assert state.remaining_turns == 5
+
+
+def test_all_defense_mode_does_not_attack_without_chain_controls():
+    ui = BattleUI()
+    find = ui.find_element
+    ui.find_element = lambda name, **kwargs: (
+        False if name.endswith('gear_left.png') else find(name, **kwargs)
+    )
+    battle, _ = load_battle(ui)
+    battle.defense_all_time = True
+    operate(battle)
+    assert ui.keys == []
+
+
 def test_next_planning_turn_can_defend_after_playback_was_already_confirmed():
     ui = BattleUI(accepted_after=1)
     battle, state_type = load_battle(ui)

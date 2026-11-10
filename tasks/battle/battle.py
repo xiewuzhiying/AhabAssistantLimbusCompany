@@ -156,9 +156,16 @@ class Battle:
         use_first_round_defense = (
             first_turn and defense_first_round and not defense_for_solo_used_this_turn
         )
-        if use_limited_defense or use_first_round_defense or self.defense_all_time:
+        use_defense = use_limited_defense or use_first_round_defense or self.defense_all_time
+        if use_defense:
             if not auto.find_element("battle/gear_left.png", threshold=0.9):
-                return False
+                # These two policies apply to chain battles. Focused encounters
+                # have a submit gear but no chain anchor; use ordinary combat
+                # there, including when a resumed dungeon has a fresh budget.
+                if self.defense_all_time or not auto.find_element("battle/gear_right.png", threshold=0.9):
+                    return False
+                use_defense = False
+        if use_defense:
             if use_limited_defense:
                 msg = f"小指良单通连续防御（剩余{defense_for_solo_state.remaining_turns}回合），开始战斗"
             elif self.defense_all_time:

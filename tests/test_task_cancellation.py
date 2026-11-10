@@ -135,3 +135,49 @@ def test_cancel_interrupts_hdr_acknowledgement_wait(monkeypatch):
         worker.requestInterruption()
         assert worker.wait(3000)
     assert worker.cancelled
+
+
+def test_stop_during_monitor_join_skips_completion_actions():
+    from datetime import datetime
+    from time import time
+
+    entered, release = threading.Event(), threading.Event()
+
+    def join_monitor():
+        entered.set()
+        assert release.wait(3)
+
+    cfg = SimpleNamespace(skip_enkephalin=False, simulator=True, resonate_with_Ahab=False,
+                          daily_task=False, get_reward=False, buy_enkephalin=False,
+                          mirror=False, set_reduce_miscontact=False)
+    auto = Mock()
+    auto.click_element.return_value = False
+    completion = Mock(return_value=True)
+    ns = dict(time=time, datetime=datetime, cfg=cfg, auto=auto, log=Mock(),
+              init_game=Mock(), _warn_if_game_monitor_hdr_enabled=Mock(), path_manager=Mock(),
+              retry_monitor=Mock(), checkpoint=checkpoint, IS_LINUX=True, IS_WINDOWS=False,
+              get_after_completion_config=Mock(return_value=([], 'none')),
+              execute_after_completion=completion, send_toast=Mock(), TemplateToast=Mock(),
+              QT_TRANSLATE_NOOP=lambda *args: args[-1])
+    ns['retry_monitor'].stop.side_effect = join_monitor
+    load_source('tasks/base/script_task_scheme.py', ns, functions={'script_task'})
+
+    class Worker(QThread):
+        cancelled = False
+
+        def run(self):
+            try:
+                ns['script_task']()
+            except userStopError:
+                self.cancelled = True
+
+    worker = Worker()
+    worker.start()
+    try:
+        assert entered.wait(3)
+        worker.requestInterruption()
+    finally:
+        release.set()
+        assert worker.wait(3000)
+    assert worker.cancelled
+    completion.assert_not_called()

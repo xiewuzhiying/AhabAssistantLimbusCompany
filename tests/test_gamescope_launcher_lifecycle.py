@@ -80,38 +80,36 @@ def test_farming_stop_requests_worker_cleanup_without_parallel_kill():
         instance = MagicMock(spec=FarmingInterfaceLeft)
         instance.my_script = MagicMock()
         instance.my_script.isRunning.return_value = True
+        instance.my_script.isInterruptionRequested.return_value = False
+        instance.link_start_button = MagicMock()
+        instance.pause_resume_button = MagicMock()
 
         FarmingInterfaceLeft.stop_script(instance)
 
-        instance.my_script.terminate.assert_called_once()
+        instance.my_script.request_stop.assert_called_once()
         mock_kill_game.assert_not_called()
 
 
-def test_my_app_close_event_delegates_to_game_process():
-    """验证在 Linux 下 AALC 主窗口退出时委托给 game_process.kill_game"""
+def test_shutdown_cleanup_delegates_to_game_process_off_gui_thread():
+    import threading
+
+    from app.shutdown import ShutdownCleanup
+
+    owner = threading.get_ident()
+    cleanup_threads = []
     with (
-        patch("module.platform_compat.IS_WINDOWS", False),
-        patch(
-            "module.game_and_screen.game_process.kill_game"
-        ) as mock_kill_game,
+        patch("module.platform_compat.IS_LINUX", True),
+        patch("module.game_and_screen.game_process.kill_game",
+              side_effect=lambda: cleanup_threads.append(threading.get_ident())),
+        patch("tasks.base.retry_monitor.retry_monitor") as monitor,
     ):
-        from app.my_app import MainWindow
-
-        instance = MagicMock(spec=MainWindow)
-        instance.x.return_value = 100
-        instance.y.return_value = 100
-        instance.farming_interface = MagicMock()
-        instance.farming_interface.interface_left.my_script = None
-        instance.tools_interface = MagicMock()
-        instance.tools_interface.tools = {}
-
-        mock_event = MagicMock()
-        with patch.object(
-            MainWindow.__bases__[0], "closeEvent", return_value=None
-        ):
-            MainWindow.closeEvent(instance, mock_event)
-
-        mock_kill_game.assert_called_once()
+        worker = ShutdownCleanup()
+        worker.start()
+        assert worker.wait(3000)
+        assert len(cleanup_threads) == 1
+        assert cleanup_threads[0] != owner
+        monitor.request_stop.assert_called_once()
+        monitor.stop.assert_called_once_with(timeout=None)
 
 
 def test_cleanup_never_unlinks_unowned_x11_socket(tmp_path):

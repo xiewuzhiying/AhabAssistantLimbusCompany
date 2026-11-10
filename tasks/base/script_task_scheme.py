@@ -1,6 +1,6 @@
 import random
 from datetime import datetime
-from threading import Event
+from threading import Event, Lock
 from time import time
 
 from playsound3 import playsound
@@ -450,6 +450,7 @@ def script_task() -> None | int:
         # 收尾动作可能主动关闭游戏或模拟器。先停止截图监控，避免设备消失
         # 被误判为断链并触发自动恢复，重新拉起刚关闭的模拟器。
         retry_monitor.stop()
+        checkpoint()
         actions, power_action = get_after_completion_config()
         try:
             should_exit_aalc = execute_after_completion(actions, power_action)
@@ -473,6 +474,11 @@ class my_script_task(QThread):
         # 初始化，构造函数
         super().__init__()
         self.mutex = QMutex()
+        self.native = IS_LINUX and not cfg.simulator
+        self.exit_requested = False
+        self._session_stop = None
+        self._stop_lock = Lock()
+        self._finishing = False
 
     def run(self):
         self.mutex.lock()
@@ -497,25 +503,55 @@ class my_script_task(QThread):
             self.exception = e
             log.exception("脚本线程执行失败")
         finally:
-            retry_monitor.stop()
+            with self._stop_lock:
+                self._finishing = True
+                session_stop = self._session_stop
+            retry_monitor.request_stop()
             try:
-                if IS_LINUX and not cfg.simulator:
+                if self.native:
+                    if session_stop is not None:
+                        session_stop.join()
                     game_process.kill_game()
+                elif self.isInterruptionRequested():
+                    self._restore_after_stop()
             finally:
-                self.mutex.unlock()
+                try:
+                    # A blocked monitor remains owned until it has unwound. A new
+                    # task must not reuse its locks or input session meanwhile.
+                    retry_monitor.stop(timeout=None)
+                finally:
+                    self.mutex.unlock()
+
+    def request_stop(self):
+        """Only signal cancellation here; GUI callers must never wait for I/O."""
+        with self._stop_lock:
+            if self.isInterruptionRequested():
+                return
+            self.requestInterruption()
+            retry_monitor.request_stop()
+            auto.resume_interactions()
+            if self.native and not self._finishing:
+                from module.game_and_screen.gamescope_launcher import GamescopeLauncher
+                # Closing our display also releases workers stuck in X11 round trips.
+                self._session_stop = GamescopeLauncher().terminate_async()
 
     def terminate(self):
-        retry_monitor.stop()
-        if IS_LINUX and not cfg.simulator:
-            self.requestInterruption()
-            auto.resume_interactions()
-        else:
-            super().terminate()
-            auto.reset_safety_locks()
+        # Compatibility for older callers; completion is signalled by finished.
+        self.request_stop()
 
-    """def stop(self):
-        self.running=False
-        self.finished_signal.emit()"""
+    def _restore_after_stop(self):
+        try:
+            if cfg.simulator:
+                if cfg.simulator_type == 0 and IS_WINDOWS:
+                    from module.automation.input_handlers.simulator.mumu_control import MumuControl
+                    MumuControl.clean_connect()
+                else:
+                    from module.automation.input_handlers.simulator.simulator_control import SimulatorControl
+                    SimulatorControl.clean_connect()
+            elif cfg.set_reduce_miscontact:
+                screen.reset_win(activate=False)
+        except Exception:
+            log.exception("停止任务后恢复窗口或连接失败")
 
     def _run(self):
         keep_awake_enabled = bool(cfg.get_value("experimental_keep_screen_awake", False))
@@ -523,8 +559,7 @@ class my_script_task(QThread):
             if keep_awake_enabled:
                 apply_power_keep_awake(True)
             ret = script_task()
-            if ret == 0:
-                mediator.kill_signal.emit()
+            self.exit_requested = ret == 0
         finally:
             if keep_awake_enabled:
                 # 先切回 AALC 再释放线程级防息屏，避免游戏仍持有前台时继续阻止息屏。

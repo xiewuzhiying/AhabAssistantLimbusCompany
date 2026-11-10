@@ -76,5 +76,3 @@ def test_monitor_cannot_click_after_waiting_for_input_lock():
     assert not worker.is_alive()
     assert result == [False]
     auto.input_handler.mouse_click.assert_not_called()
-
-

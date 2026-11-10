@@ -20,6 +20,7 @@ class ToolsInterface(ScrollArea):
         super().__init__(parent=parent)
         self.setObjectName("ToolsInterface")
         self.tools = {}
+        self._starting_tools = set()
         self.__init_widget()
         self.__init_card()
         self.__initLayout()
@@ -91,6 +92,17 @@ class ToolsInterface(ScrollArea):
         self.get_screenshot_card.clicked.connect(lambda: self._tool_start("screenshot", self.get_screenshot_card))
 
     def _tool_start(self, tool_name: str, card: BasePushSettingCard):
+        if getattr(self.window(), "_closing", False):
+            return
+        if tool_name in self._starting_tools:
+            return
+        self._starting_tools.add(tool_name)
+        try:
+            self._open_tool(tool_name, card)
+        finally:
+            self._starting_tools.discard(tool_name)
+
+    def _open_tool(self, tool_name: str, card: BasePushSettingCard):
         if tool_name in self.tools:
             tool = self.tools[tool_name]
             if isinstance(tool.w, QWidget):
@@ -110,6 +122,13 @@ class ToolsInterface(ScrollArea):
         tool.w.destroyed.connect(lambda _: self._restore_button_style(card))
         if tool_name == "screenshot":
             tool.w.on_saved_timestr.connect(self._onScreenshotToolButtonPressed)
+        if getattr(self.window(), "_closing", False):
+            if isinstance(tool.w, QWidget):
+                tool.w.close()
+            else:
+                tool.w.deleteLater()
+                self.tools.pop(tool_name, None)
+            return
         if isinstance(tool.w, QThread):
             tool.w.start()
 

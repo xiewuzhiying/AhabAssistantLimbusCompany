@@ -60,10 +60,6 @@ class SettingInterface(QWidget):
         self.__init_card()
         self.__initLayout()
         self.__init_nav()
-        from module.platform_compat import IS_LINUX
-        if IS_LINUX:
-            from app.linux_setup import LinuxControls
-            self.expand_layout.addWidget(LinuxControls(self))
 
         # 再应用主题样式并注册主题切换监听。
         self._apply_theme_style()
@@ -566,6 +562,12 @@ class SettingInterface(QWidget):
         self.expand_layout.addWidget(self.theme_pack_group)
         self.expand_layout.addWidget(self.simulator_setting_group)
         self.expand_layout.addWidget(self.game_path_group)
+        from module.platform_compat import IS_LINUX
+        if IS_LINUX:
+            from app.linux_setup import LinuxControls
+            self.linux_controls = LinuxControls(self.scroll_widget)
+            self.linux_controls.adjustSize()
+            self.expand_layout.addWidget(self.linux_controls)
         self.expand_layout.addWidget(self.autodaily_group)
         self.expand_layout.addWidget(self.personal_group)
         self.expand_layout.addWidget(self.update_group)
